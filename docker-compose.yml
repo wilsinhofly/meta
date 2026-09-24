@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  meta-hub:
+    container_name: meta-hub
+    build: .
+    restart: always
+    ports:
+      - "3005:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./public/uploads:/app/public/uploads
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: meta-hub-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: meta_hub
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: meta-hub-redis
+    restart: always
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meta Omnichannel Hub | WhatsApp, Instagram & Catalog</title>
+    <meta name="description" content="Portal centralizador de catálogo e atendimento integrado à Meta Platform com filas assíncronas." />
+    <meta property="og:title" content="Meta Omnichannel Hub | WhatsApp, Instagram & Catalog" />
+    <meta property="og:description" content="Portal centralizador de catálogo e atendimento integrado à Meta Platform com filas assíncronas." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Anti-Cache & Desregistrador de Service Worker Órfão de projetos anteriores -->
+    <script>
+      (function() {
+        try {
+          // 1. Desregistra qualquer Service Worker ativo no domínio
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for (var i = 0; i < registrations.length; i++) {
+                registrations[i].unregister().then(function(success) {
+                  if (success) {
+                    console.log('[Cache Cleanup] Service Worker órfão desregistrado com sucesso.');
+                  }
+                });
+              }
+            }).catch(function(err) {
+              console.warn('[Cache Cleanup] Falha ao listar service workers:', err);
+            });
+          }
+
+          // 2. Limpa completamente todos os Caches da Cache Storage API
+          if ('caches' in window) {
+            caches.keys().then(function(cacheNames) {
+              return Promise.all(
+                cacheNames.map(function(cacheName) {
+                  console.log('[Cache Cleanup] Deletando cache antigo:', cacheName);
+                  return caches.delete(cacheName);
+                })
+              );
+            }).catch(function(err) {
+              console.warn('[Cache Cleanup] Falha ao limpar caches:', err);
+            });
+          }
+        } catch (e) {
+          console.error('[Cache Cleanup] Erro no script de limpeza:', e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

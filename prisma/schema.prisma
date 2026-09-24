@@ -1,0 +1,199 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCING
+  SYNCED
+  FAILED
+}
+
+enum ConversationState {
+  BOT_ROUTING
+  BOT_IN_MENU
+  HUMAN_QUEUE
+  HUMAN_ACTIVE
+  CLOSED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  INTERACTIVE_BUTTON
+  INTERACTIVE_LIST
+  PRODUCT
+  PRODUCT_LIST
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+enum MessageStatus {
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum InstagramMediaType {
+  IMAGE
+  REELS
+  CAROUSEL
+  STORIES
+}
+
+enum PostPublishStatus {
+  DRAFT
+  SCHEDULED
+  PROCESSING_CONTAINER
+  READY_TO_PUBLISH
+  PUBLISHED
+  FAILED
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum ChannelType {
+  WHATSAPP
+  INSTAGRAM
+  COMMERCE
+  FACEBOOK_PAGE
+}
+
+enum TokenType {
+  SYSTEM_USER
+  PAGE_ACCESS
+  USER_ACCESS
+}
+
+model Product {
+  id             String     @id @default(uuid())
+  retailerId     String     @unique // SKU (e.g., "SKU-TENIS-AZUL-42")
+  title          String
+  description    String
+  price          Int        // Em centavos (Ex: 29990 = R$ 299,90)
+  currency       String     @default("BRL")
+  availability   String     @default("in stock") // "in stock" | "out of stock"
+  condition      String     @default("new")      // "new" | "refurbished" | "used"
+  url            String
+  imageUrl       String
+  brand          String     @default("MinhaMarca")
+  category       String?
+  metaCatalogId  String?
+  syncStatus     SyncStatus @default(PENDING)
+  lastSyncedAt   DateTime?
+  syncError      String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([retailerId])
+  @@index([syncStatus])
+}
+
+model Contact {
+  id               String         @id @default(uuid())
+  waId             String         @unique // WhatsApp ID / Phone (ex: 5511999999999)
+  name             String?
+  profileName      String?
+  lastActiveAt     DateTime       @default(now())
+  createdAt        DateTime       @default(now())
+  conversations    Conversation[]
+
+  @@index([waId])
+}
+
+model Conversation {
+  id            String            @id @default(uuid())
+  contactId     String
+  contact       Contact           @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  state         ConversationState @default(BOT_ROUTING)
+  assignedAgent String?
+  lastMessageAt DateTime          @default(now())
+  messages      Message[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([contactId])
+  @@index([state])
+}
+
+model Message {
+  id             String           @id @default(uuid())
+  wamid          String           @unique // Deduplication ID from WhatsApp
+  conversationId String
+  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  direction      MessageDirection
+  type           MessageType      @default(TEXT)
+  body           String?
+  rawPayload     Json?
+  status         MessageStatus    @default(SENT)
+  createdAt      DateTime         @default(now())
+
+  @@index([wamid])
+  @@index([conversationId])
+}
+
+model InstagramPost {
+  id           String             @id @default(uuid())
+  igUserId     String
+  mediaType    InstagramMediaType @default(IMAGE)
+  caption      String
+  mediaUrl     String             // Public HTTPS CDN URL (required by Meta)
+  thumbnailUrl String?
+  scheduledFor DateTime?
+  status       PostPublishStatus  @default(DRAFT)
+  containerId  String?            // Meta Graph API Container ID
+  metaMediaId  String?            // Final Published Media ID
+  errorCode    String?
+  errorMessage String?
+  publishedAt  DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  @@index([status])
+  @@index([scheduledFor])
+}
+
+model QueueJobLog {
+  id          String    @id @default(uuid())
+  queueName   String    // 'whatsapp-inbound' | 'catalog-sync' | 'instagram-publisher'
+  jobId       String
+  name        String
+  data        Json
+  status      JobStatus @default(PENDING)
+  attempts    Int       @default(0)
+  error       String?
+  durationMs  Int?
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([queueName])
+  @@index([status])
+}
+
+model MetaCredential {
+  id            String      @id @default(uuid())
+  channel       ChannelType
+  tokenType     TokenType   @default(SYSTEM_USER)
+  token         String
+  expiresAt     DateTime?   // null for permanent System User token
+  isValid       Boolean     @default(true)
+  lastCheckedAt DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}

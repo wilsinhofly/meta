@@ -1,0 +1,6 @@
+{
+  "name": "Meta Omnichannel Hub",
+  "description": "Portal centralizador de catálogo e atendimento integrado à Meta Platform (WhatsApp, Instagram e Facebook) com filas assíncronas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
