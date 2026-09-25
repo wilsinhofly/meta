@@ -8,17 +8,16 @@ import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import path from 'path';
 import fs from 'fs';
-
 import { webhookRoutes } from './routes/webhooks.js';
 import { catalogRoutes } from './routes/catalog.ts';
 import { instagramRoutes } from './routes/instagram.js';
 import { queueRoutes } from './routes/queues.js';
 import { uploadRoutes } from './routes/upload.js';
 import { legalRoutes } from './routes/legal.js';
-
 import { initWhatsAppWorker } from './workers/whatsapp.worker.js';
 import { initCatalogWorker } from './workers/catalog.worker.js';
 import { initInstagramWorker } from './workers/instagram.worker.js';
+import { initTokenRefreshWorker } from './workers/token-refresh.worker.js';
 
 export async function buildFastifyApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -52,10 +51,11 @@ export async function buildFastifyApp(): Promise<FastifyInstance> {
     decorateReply: false,
   });
 
-  // Inicialização dos 3 Workers independentes
+  // Inicialização dos 4 Workers independentes do BullMQ
   initWhatsAppWorker();
   initCatalogWorker();
   initInstagramWorker();
+  initTokenRefreshWorker();
 
   // Health check endpoint
   app.get('/api/health', async () => {
@@ -63,7 +63,7 @@ export async function buildFastifyApp(): Promise<FastifyInstance> {
       status: 'ok',
       service: 'meta-omnichannel-hub',
       timestamp: new Date().toISOString(),
-      queues: ['whatsapp-inbound', 'catalog-sync', 'instagram-publisher'],
+      queues: ['whatsapp-inbound', 'catalog-sync', 'instagram-publisher', 'instagram-token-refresh'],
       framework: 'Fastify + BullMQ + Prisma',
     };
   });

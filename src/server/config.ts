@@ -6,6 +6,9 @@ const envSchema = z.object({
   DATABASE_URL: z.string().optional().default('postgresql://postgres:postgres@localhost:5432/meta_hub?schema=public'),
   REDIS_URL: z.string().optional().default('redis://localhost:6379'),
 
+  // Chave de Segurança para rotas de Administração (ex: troca/renovação de credenciais)
+  ADMIN_API_KEY: z.string().default(process.env.ADMIN_API_KEY || 'adm_sec_9f8b417e2c04da56e87b1c34a90f1e2d78b6c4e0a3f89d'),
+
   // Gemini Key
   GEMINI_API_KEY: z.string().default(process.env.GEMINI_API_KEY || ''),
 

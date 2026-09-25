@@ -1,16 +1,23 @@
 /**
  * BullMQ Queues Architecture
- * 3 Filas separadas conforme o Blueprint:
+ * 4 Filas separadas:
  * 1. whatsapp-inbound: processa webhooks do WhatsApp, deduplica wamid e roda máquina de estados
  * 2. catalog-sync: processa deltas de catálogo e envia lotes para Meta Commerce Manager Batch API
  * 3. instagram-publisher: executa o pipeline assíncrono em 2 fases (Container Creation -> Polling -> Publish)
+ * 4. instagram-token-refresh: job recorrente a cada 7 dias para renovar o long-lived token via ig_refresh_token
  */
+
+export type QueueName =
+  | 'whatsapp-inbound'
+  | 'catalog-sync'
+  | 'instagram-publisher'
+  | 'instagram-token-refresh';
 
 export interface QueueJob<T = any> {
   id: string;
   name: string;
   data: T;
-  queueName: 'whatsapp-inbound' | 'catalog-sync' | 'instagram-publisher';
+  queueName: QueueName;
   status: 'waiting' | 'active' | 'completed' | 'failed';
   progress: number;
   attempts: number;
@@ -24,12 +31,13 @@ export interface QueueJob<T = any> {
 export type JobHandler<T = any> = (job: QueueJob<T>) => Promise<any>;
 
 class AppQueue<T = any> {
-  public name: 'whatsapp-inbound' | 'catalog-sync' | 'instagram-publisher';
+  public name: QueueName;
   private jobs: QueueJob<T>[] = [];
   private handlers: JobHandler<T>[] = [];
   private isProcessing = false;
+  private intervals: NodeJS.Timeout[] = [];
 
-  constructor(name: 'whatsapp-inbound' | 'catalog-sync' | 'instagram-publisher') {
+  constructor(name: QueueName) {
     this.name = name;
   }
 
@@ -59,6 +67,19 @@ class AppQueue<T = any> {
     }
 
     return job;
+  }
+
+  /**
+   * Adiciona um repeatable job que dispara periodicamente (compatível com BullMQ repeatable jobs)
+   */
+  addRepeatableJob(name: string, data: T, intervalMs: number, runImmediately = true) {
+    if (runImmediately) {
+      this.add(name, data);
+    }
+    const timer = setInterval(() => {
+      this.add(name, data);
+    }, intervalMs);
+    this.intervals.push(timer);
   }
 
   process(handler: JobHandler<T>) {
@@ -122,22 +143,25 @@ class AppQueue<T = any> {
   }
 }
 
-// Instâncias das 3 Filas separadas do Blueprint
+// Instâncias das Filas
 export const whatsappQueue = new AppQueue('whatsapp-inbound');
 export const catalogSyncQueue = new AppQueue('catalog-sync');
 export const instagramPublishQueue = new AppQueue('instagram-publisher');
+export const instagramTokenRefreshQueue = new AppQueue('instagram-token-refresh');
 
 export async function getAllQueueMetrics() {
-  const [wa, cat, ig] = await Promise.all([
+  const [wa, cat, ig, refresh] = await Promise.all([
     whatsappQueue.getCounts(),
     catalogSyncQueue.getCounts(),
     instagramPublishQueue.getCounts(),
+    instagramTokenRefreshQueue.getCounts(),
   ]);
 
   return {
     whatsapp: wa,
     catalog: cat,
     instagram: ig,
+    tokenRefresh: refresh,
     system: {
       uptimeSec: Math.floor(process.uptime()),
       timestamp: Date.now(),
@@ -147,13 +171,14 @@ export async function getAllQueueMetrics() {
 }
 
 export async function getAllRecentJobs(limit = 40) {
-  const [waJobs, catJobs, igJobs] = await Promise.all([
+  const [waJobs, catJobs, igJobs, refreshJobs] = await Promise.all([
     whatsappQueue.getJobs(undefined, limit),
     catalogSyncQueue.getJobs(undefined, limit),
     instagramPublishQueue.getJobs(undefined, limit),
+    instagramTokenRefreshQueue.getJobs(undefined, limit),
   ]);
 
-  return [...waJobs, ...catJobs, ...igJobs]
+  return [...waJobs, ...catJobs, ...igJobs, ...refreshJobs]
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, limit);
 }

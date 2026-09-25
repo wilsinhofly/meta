@@ -4,9 +4,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { db } from '../db/prisma.js';
-import { instagramPublishQueue } from '../queues/index.js';
+import { instagramPublishQueue, instagramTokenRefreshQueue } from '../queues/index.js';
 import { config } from '../config.js';
 import { exchangeInstagramToken } from '../services/instagram-token.service.js';
+import { processTokenRefresh } from '../workers/token-refresh.worker.js';
 
 const postSchema = z.object({
   mediaType: z.enum(['IMAGE', 'REELS', 'STORIES']),
@@ -21,9 +22,28 @@ const exchangeTokenSchema = z.object({
   persistToEnv: z.boolean().optional().default(true),
 });
 
+/**
+ * Middleware para proteger endpoints administrativos de credenciais
+ * Exige cabeçalho 'x-admin-key' idêntico ao ADMIN_API_KEY
+ */
+function requireAdminAuth(request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) {
+  const adminKeyHeader = request.headers['x-admin-key'];
+  const expectedKey = process.env.ADMIN_API_KEY || config.ADMIN_API_KEY;
+
+  if (!adminKeyHeader || adminKeyHeader !== expectedKey) {
+    reply.code(401).send({
+      statusCode: 401,
+      error: 'Unauthorized',
+      message: 'Acesso negado: header "x-admin-key" ausente ou inválido.',
+    });
+    return;
+  }
+  done();
+}
+
 export async function instagramRoutes(fastify: FastifyInstance) {
   /**
-   * Listar publicações do Instagram
+   * Listar publicações do Instagram (público do app)
    */
   fastify.get('/api/instagram/posts', async () => {
     const posts = await db.getPosts();
@@ -34,91 +54,128 @@ export async function instagramRoutes(fastify: FastifyInstance) {
   });
 
   /**
-   * Status e informações das credenciais do Instagram
+   * Status e informações das credenciais do Instagram (PROTEGIDO POR x-admin-key)
    */
-  fastify.get('/api/instagram/token-status', async () => {
-    const activeToken =
-      process.env.INSTAGRAM_LOGIN_ACCESS_TOKEN ||
-      process.env.INSTAGRAM_ACCESS_TOKEN ||
-      process.env.META_SYSTEM_USER_TOKEN ||
-      '';
+  fastify.get(
+    '/api/instagram/token-status',
+    { preHandler: requireAdminAuth },
+    async () => {
+      const activeToken =
+        process.env.INSTAGRAM_LOGIN_ACCESS_TOKEN ||
+        process.env.INSTAGRAM_ACCESS_TOKEN ||
+        process.env.META_SYSTEM_USER_TOKEN ||
+        '';
 
-    const credential = await db.getLatestCredential('INSTAGRAM');
+      const credential = await db.getLatestCredential('INSTAGRAM');
 
-    let isShortLivedCandidate = false;
-    let preview = 'Nenhum token configurado';
+      let isShortLivedCandidate = false;
+      let preview = 'Nenhum token configurado';
+      let daysRemaining: number | null = null;
 
-    if (activeToken) {
-      preview = `${activeToken.slice(0, 10)}...${activeToken.slice(-6)}`;
-      isShortLivedCandidate = activeToken.startsWith('IGAA') && !credential?.expiresAt;
+      if (activeToken) {
+        preview = `${activeToken.slice(0, 10)}...${activeToken.slice(-6)}`;
+        isShortLivedCandidate = activeToken.startsWith('IGAA') && !credential?.expiresAt;
+      }
+
+      if (credential?.expiresAt) {
+        const diffMs = new Date(credential.expiresAt).getTime() - Date.now();
+        daysRemaining = Math.max(0, Math.round(diffMs / (24 * 60 * 60 * 1000)));
+      }
+
+      return {
+        configured: Boolean(activeToken),
+        tokenPreview: preview,
+        isShortLivedCandidate,
+        expiresAt: credential?.expiresAt || null,
+        daysRemaining,
+        lastCheckedAt: credential?.lastCheckedAt || null,
+        channel: 'INSTAGRAM',
+        tokenType: credential?.tokenType || (activeToken.startsWith('IGAA') ? 'USER_ACCESS' : 'SYSTEM_USER'),
+      };
     }
-
-    return {
-      configured: Boolean(activeToken),
-      tokenPreview: preview,
-      isShortLivedCandidate,
-      expiresAt: credential?.expiresAt || null,
-      lastCheckedAt: credential?.lastCheckedAt || null,
-      channel: 'INSTAGRAM',
-      tokenType: credential?.tokenType || (activeToken.startsWith('IGAA') ? 'USER_ACCESS' : 'SYSTEM_USER'),
-    };
-  });
+  );
 
   /**
-   * Rota de Admin: Troca automática de token de curta duração por Long-Lived Token (60 dias)
+   * Rota de Admin: Troca de token de curta duração por Long-Lived Token (60 dias) (PROTEGIDO POR x-admin-key)
    * GET https://graph.instagram.com/access_token?grant_type=ig_exchange_token
    */
-  fastify.post('/api/instagram/exchange-token', async (request: FastifyRequest, reply: FastifyReply) => {
-    const parseResult = exchangeTokenSchema.safeParse(request.body);
-    if (!parseResult.success) {
-      return reply.code(400).send({
-        error: 'Parâmetros inválidos',
-        details: parseResult.error.format(),
-      });
+  fastify.post(
+    '/api/instagram/exchange-token',
+    { preHandler: requireAdminAuth },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const parseResult = exchangeTokenSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.code(400).send({
+          error: 'Parâmetros inválidos',
+          details: parseResult.error.format(),
+        });
+      }
+
+      const { shortLivedToken, persistToEnv } = parseResult.data;
+      const clientSecret =
+        parseResult.data.clientSecret ||
+        process.env.INSTAGRAM_APP_SECRET ||
+        process.env.META_APP_SECRET ||
+        config.INSTAGRAM_APP_SECRET ||
+        config.META_APP_SECRET;
+
+      if (!clientSecret || !clientSecret.trim()) {
+        return reply.code(400).send({
+          error: 'Chave secreta ausente',
+          message:
+            'Forneça o clientSecret no corpo da requisição ou configure INSTAGRAM_APP_SECRET no .env do servidor.',
+        });
+      }
+
+      try {
+        const result = await exchangeInstagramToken({
+          shortLivedToken,
+          clientSecret,
+          persistToEnv,
+        });
+
+        return reply.code(200).send({
+          success: true,
+          message: 'Token de longa duração (60 dias) gerado e persistido com sucesso!',
+          data: {
+            tokenType: result.tokenType,
+            expiresInDays: Math.round(result.expiresIn / 86400),
+            expiresAt: result.expiresAt,
+            accountInfo: result.accountInfo,
+            tokenPreview: `${result.accessToken.slice(0, 10)}...${result.accessToken.slice(-6)}`,
+          },
+        });
+      } catch (err: any) {
+        console.error('[API Exchange Token] Falha ao trocar token:', err.message);
+        return reply.code(500).send({
+          success: false,
+          error: err.message,
+        });
+      }
     }
+  );
 
-    const { shortLivedToken, persistToEnv } = parseResult.data;
-    // Usa clientSecret passado no body ou o configurado nas variáveis de ambiente
-    const clientSecret =
-      parseResult.data.clientSecret ||
-      process.env.INSTAGRAM_APP_SECRET ||
-      process.env.META_APP_SECRET ||
-      config.INSTAGRAM_APP_SECRET ||
-      config.META_APP_SECRET;
-
-    if (!clientSecret || !clientSecret.trim()) {
-      return reply.code(400).send({
-        error: 'Chave secreta ausente',
-        message: 'Forneça o clientSecret no corpo da requisição ou configure INSTAGRAM_APP_SECRET/META_APP_SECRET no .env do servidor.',
-      });
+  /**
+   * Rota de Admin: Forçar disparo imediato do Token Refresh (PROTEGIDO POR x-admin-key)
+   */
+  fastify.post(
+    '/api/instagram/refresh-token-now',
+    { preHandler: requireAdminAuth },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const result = await processTokenRefresh();
+        return reply.code(200).send({
+          success: true,
+          ...result,
+        });
+      } catch (err: any) {
+        return reply.code(500).send({
+          success: false,
+          error: err.message,
+        });
+      }
     }
-
-    try {
-      const result = await exchangeInstagramToken({
-        shortLivedToken,
-        clientSecret,
-        persistToEnv,
-      });
-
-      return reply.code(200).send({
-        success: true,
-        message: 'Token de longa duração (60 dias) gerado e persistido com sucesso!',
-        data: {
-          tokenType: result.tokenType,
-          expiresInDays: Math.round(result.expiresIn / 86400),
-          expiresAt: result.expiresAt,
-          accountInfo: result.accountInfo,
-          tokenPreview: `${result.accessToken.slice(0, 10)}...${result.accessToken.slice(-6)}`,
-        },
-      });
-    } catch (err: any) {
-      console.error('[API Exchange Token] Falha ao trocar token:', err.message);
-      return reply.code(500).send({
-        success: false,
-        error: err.message,
-      });
-    }
-  });
+  );
 
   /**
    * Agendar ou publicar imediatamente
@@ -131,7 +188,6 @@ export async function instagramRoutes(fastify: FastifyInstance) {
 
     const { mediaType, caption, mediaUrl, scheduledFor } = parseResult.data;
 
-    // Cria registro no banco de dados
     const post = await db.addPost({
       igUserId: config.INSTAGRAM_BUSINESS_ACCOUNT_ID,
       mediaType,
@@ -141,7 +197,6 @@ export async function instagramRoutes(fastify: FastifyInstance) {
       status: scheduledFor ? 'SCHEDULED' : 'PROCESSING_CONTAINER',
     });
 
-    // Calcula delay caso haja agendamento futuro
     let delay = 0;
     if (scheduledFor) {
       const scheduledTime = new Date(scheduledFor).getTime();
@@ -149,7 +204,6 @@ export async function instagramRoutes(fastify: FastifyInstance) {
       delay = Math.max(0, scheduledTime - now);
     }
 
-    // Enfileira na fila BullMQ instagram-publisher
     const job = await instagramPublishQueue.add(
       `publish-${post.id}`,
       {
