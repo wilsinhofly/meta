@@ -418,7 +418,7 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
     setScheduleError(null);
 
     if (!mediaUrl) {
-      alert('Por favor, faça upload de uma foto/vídeo ou insira uma URL.');
+      alert('Por favor, faça upload de uma foto ou vídeo para a publicação.');
       return;
     }
 
@@ -712,21 +712,6 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                   </button>
                 </div>
               )}
-            </div>
-
-            {/* URL da Mídia */}
-            <div>
-              <label className="font-semibold text-slate-700 block mb-1">
-                URL Pública da Mídia (Acessível pela Meta Graph API)
-              </label>
-              <input
-                type="url"
-                required
-                value={mediaUrl}
-                onChange={(e) => setMediaUrl(e.target.value)}
-                placeholder="https://meta.3facil.com/uploads/..."
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-[11px] focus:ring-1 focus:ring-fuchsia-500"
-              />
             </div>
 
             {/* Caption */}
