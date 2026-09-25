@@ -47,10 +47,11 @@ interface InstagramPublisherProps {
 
 interface BatchDaySchedule {
   dayIndex: number;
+  dateFormatted: string; // ex: 25/09/26
   dateStr: string; // YYYY-MM-DD
   timeStr: string; // HH:mm
   fullDateTime: string; // YYYY-MM-DDTHH:mm
-  dateLabel: string;
+  weekdayLabel: string; // sex., sáb., etc.
 }
 
 export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
@@ -65,7 +66,7 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
   const [mediaUrl, setMediaUrl] = useState('https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4');
   
   // Período selecionado: 'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'
-  const [schedulePeriod, setSchedulePeriod] = useState<'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'>('CUSTOM');
+  const [schedulePeriod, setSchedulePeriod] = useState<'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'>('5_DAYS');
   const [scheduledDate, setScheduledDate] = useState('');
   
   // Lista de dias da campanha para ajuste manual antes de confirmar
@@ -106,9 +107,17 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
     }
   }, []);
 
+  // Carregar os horários ocupados e inicializar com os 5 dias por padrão
   useEffect(() => {
     fetchBusyTimes();
   }, [fetchBusyTimes, posts]);
+
+  // Inicializa o lote de 5 dias assim que os slots forem carregados se estiver vazio
+  useEffect(() => {
+    if (schedulePeriod === '5_DAYS' && batchSchedules.length === 0) {
+      handleSelectPeriod('5_DAYS');
+    }
+  }, [schedulePeriod]);
 
   // Mapear horários (HH:mm) ocupados no banco de dados
   const scheduledTimeSlots = useMemo(() => {
@@ -248,13 +257,20 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
       const d = String(targetDate.getDate()).padStart(2, '0');
       const dateStr = `${y}-${mo}-${d}`;
       const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      
+      const day2Digits = String(targetDate.getDate()).padStart(2, '0');
+      const month2Digits = String(targetDate.getMonth() + 1).padStart(2, '0');
+      const year2Digits = String(targetDate.getFullYear()).slice(-2);
+      const dateFormatted = `${day2Digits}/${month2Digits}/${year2Digits}`;
+      const weekdayLabel = targetDate.toLocaleDateString('pt-BR', { weekday: 'short' });
 
       newBatch.push({
         dayIndex: i,
+        dateFormatted,
         dateStr,
         timeStr,
         fullDateTime: `${dateStr}T${timeStr}`,
-        dateLabel: targetDate.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' }),
+        weekdayLabel,
       });
     }
 
@@ -276,34 +292,53 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
     );
   };
 
-  // Validação em tempo real de colisões dentro do lote ou contra o banco
+  // Controle de qual dia da lista está com a grade de horários aberta para seleção rápida
+  const [activePickerDayIndex, setActivePickerDayIndex] = useState<number | null>(null);
+
+  // Mapear erros inline específicos de cada linha da lista de dias (sem travar as outras)
+  const batchItemErrors = useMemo(() => {
+    const errors: Record<number, string> = {};
+    if (batchSchedules.length === 0) return errors;
+
+    const timeCounts = new Map<string, number[]>();
+    batchSchedules.forEach((item) => {
+      const list = timeCounts.get(item.timeStr) || [];
+      list.push(item.dayIndex);
+      timeCounts.set(item.timeStr, list);
+    });
+
+    batchSchedules.forEach((item) => {
+      // 1. Conflito interno no lote (repetido com outro dia da lista)
+      const daysWithSameTime = timeCounts.get(item.timeStr) || [];
+      if (daysWithSameTime.length > 1) {
+        const otherDays = daysWithSameTime.filter((d) => d !== item.dayIndex).map((d) => d + 1);
+        errors[item.dayIndex] = `Horário repetido com o Dia ${otherDays.join(', ')}. Cada dia deve ter um horário único.`;
+        return;
+      }
+
+      // 2. Conflito com post já agendado no banco de dados
+      if (scheduledTimeSlots.has(item.timeStr)) {
+        const conflict = scheduledTimeSlots.get(item.timeStr);
+        errors[item.dayIndex] = `Horário ${item.timeStr} já ocupado por outro post agendado (${conflict?.dateFormatted || 'no sistema'}). Escolha outro.`;
+        return;
+      }
+    });
+
+    return errors;
+  }, [batchSchedules, scheduledTimeSlots]);
+
+  // Validação geral do lote para habilitar/desabilitar o botão de confirmar agendamento
   const batchConflicts = useMemo(() => {
     if (batchSchedules.length === 0) return { hasError: false, message: '' };
-
-    const seenTimes = new Map<string, number>();
-
-    for (const item of batchSchedules) {
-      // 1. Checa se colide com outro dia dentro do próprio lote
-      if (seenTimes.has(item.timeStr)) {
-        const otherDay = (seenTimes.get(item.timeStr)! + 1);
-        return {
-          hasError: true,
-          message: `O horário ${item.timeStr} está repetido no Dia ${item.dayIndex + 1} e no Dia ${otherDay}. Cada dia deve ter um horário exclusivo!`,
-        };
-      }
-      seenTimes.set(item.timeStr, item.dayIndex);
-
-      // 2. Checa se colide com post existente no banco
-      if (scheduledTimeSlots.has(item.timeStr)) {
-        return {
-          hasError: true,
-          message: `O horário ${item.timeStr} (Dia ${item.dayIndex + 1}) já está ocupado por outro post agendado no sistema. Escolha outro horário para este dia.`,
-        };
-      }
+    const errorCount = Object.keys(batchItemErrors).length;
+    if (errorCount > 0) {
+      return {
+        hasError: true,
+        message: `Existem ${errorCount} ${errorCount === 1 ? 'dia' : 'dias'} com conflito de horário. Corrija os horários destacados em vermelho para confirmar o lote.`,
+      };
     }
-
     return { hasError: false, message: '' };
-  }, [batchSchedules, scheduledTimeSlots]);
+  }, [batchSchedules, batchItemErrors]);
 
   const handleFileUpload = async (file: File) => {
     if (!file) return;
@@ -716,29 +751,17 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                     <span>Seletor de Período & Programação em Lote</span>
                   </span>
                   <span className="text-[10px] text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 font-medium px-2 py-0.5 rounded-full">
-                    {scheduledTimeSlots.size} horários bloqueados
+                    {scheduledTimeSlots.size} horários bloqueados no sistema
                   </span>
                 </label>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Escolher 5, 10 ou 15 dias cria <strong>1 post por dia consecutivo</strong> (começando amanhã), cada um com um horário exclusivo que não se repete.
+                  Ao escolher um período, <strong>um post será criado para cada dia consecutivo a partir de amanhã</strong>, com horário exclusivo que não se repete.
                 </p>
               </div>
 
               {/* Botões do Seletor de Período */}
               <div>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSelectPeriod('IMMEDIATE')}
-                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
-                      schedulePeriod === 'IMMEDIATE'
-                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
-                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    <Send className="h-3 w-3" />
-                    <span>Publicar Agora</span>
-                  </button>
                   <button
                     type="button"
                     onClick={() => handleSelectPeriod('5_DAYS')}
@@ -749,7 +772,7 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                     }`}
                   >
                     <Layers className="h-3.5 w-3.5 text-fuchsia-600" />
-                    <span>5 Dias (5 Posts)</span>
+                    <span>Próximos 5 dias</span>
                   </button>
                   <button
                     type="button"
@@ -761,7 +784,7 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                     }`}
                   >
                     <Layers className="h-3.5 w-3.5 text-fuchsia-600" />
-                    <span>10 Dias (10 Posts)</span>
+                    <span>Próximos 10 dias</span>
                   </button>
                   <button
                     type="button"
@@ -773,107 +796,222 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                     }`}
                   >
                     <Layers className="h-3.5 w-3.5 text-fuchsia-600" />
-                    <span>15 Dias (15 Posts)</span>
+                    <span>Próximos 15 dias</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => handleSelectPeriod('CUSTOM')}
                     className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
                       schedulePeriod === 'CUSTOM'
-                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs font-bold ring-1 ring-fuchsia-400'
                         : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     <Clock className="h-3 w-3" />
-                    <span>Post Único</span>
+                    <span>Data Manual</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('IMMEDIATE')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === 'IMMEDIATE'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs font-bold ring-1 ring-fuchsia-400'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Send className="h-3 w-3" />
+                    <span>Imediato</span>
                   </button>
                 </div>
               </div>
 
-              {/* PRÉVIA DE CAMPANHA EM LOTE COM AJUSTE MANUAL DIA A DIA */}
-              {['5_DAYS', '10_DAYS', '15_DAYS'].includes(schedulePeriod) && batchSchedules.length > 0 && (
-                <div className="space-y-3 pt-2 border-t border-slate-200">
+              {/* LISTA SUBSTITUTA: UMA LINHA PARA CADA DIA DO PERÍODO SELECIONADO */}
+              {['5_DAYS', '10_DAYS', '15_DAYS'].includes(schedulePeriod) && (
+                <div className="space-y-3 pt-3 border-t border-slate-200">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-800 text-[11px] flex items-center space-x-1.5">
-                      <Sparkles className="h-3.5 w-3.5 text-fuchsia-600" />
-                      <span>Cronograma dos {batchSchedules.length} Dias Consecutivos (Ajustável):</span>
+                    <span className="font-bold text-slate-900 text-xs flex items-center space-x-1.5">
+                      <Calendar className="h-3.5 w-3.5 text-fuchsia-600" />
+                      <span>
+                        Cronograma da Campanha ({batchSchedules.length} posts em {batchSchedules.length} dias consecutivos):
+                      </span>
                     </span>
-                    <span className="text-[10px] text-slate-400">
-                      Você pode alterar o horário de qualquer dia abaixo
+                    <span className="text-[10px] text-slate-500">
+                      Horários já sugeridos automaticamente e editáveis
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto p-1 bg-white rounded-lg border border-slate-200">
+                  <div className="space-y-2">
                     {batchSchedules.map((schedule) => {
-                      const isTimeConflict = scheduledTimeSlots.has(schedule.timeStr);
+                      const itemError = batchItemErrors[schedule.dayIndex];
+                      const isPickerOpen = activePickerDayIndex === schedule.dayIndex;
+
                       return (
                         <div
                           key={schedule.dayIndex}
-                          className={`p-2 rounded-md border flex items-center justify-between text-[11px] ${
-                            isTimeConflict
-                              ? 'bg-red-50 border-red-300'
-                              : 'bg-slate-50 border-slate-200'
+                          className={`p-3 rounded-xl border transition ${
+                            itemError
+                              ? 'bg-red-50/70 border-red-300 ring-1 ring-red-200'
+                              : 'bg-white border-slate-200 shadow-2xs hover:border-slate-300'
                           }`}
                         >
-                          <div className="flex items-center space-x-2">
-                            <span className="w-5 h-5 rounded-full bg-fuchsia-100 text-fuchsia-800 text-[10px] font-bold flex items-center justify-center shrink-0">
-                              {schedule.dayIndex + 1}
-                            </span>
-                            <div>
-                              <span className="font-semibold text-slate-800 block capitalize">
-                                {schedule.dateLabel}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                            {/* Data Fixa e Inalterável */}
+                            <div className="flex items-center space-x-3">
+                              <span className="w-6 h-6 rounded-full bg-fuchsia-100 text-fuchsia-800 text-[11px] font-bold flex items-center justify-center shrink-0">
+                                {schedule.dayIndex + 1}
                               </span>
-                              <span className="text-[10px] text-slate-400">
-                                {schedule.dateStr}
-                              </span>
+                              <div>
+                                <div className="flex items-center space-x-2">
+                                  <span className="font-mono font-bold text-slate-900 text-xs">
+                                    {schedule.dateFormatted}
+                                  </span>
+                                  <span className="text-[10px] uppercase font-semibold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                                    {schedule.weekdayLabel}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 block">
+                                  {schedule.dayIndex === 0 ? 'Amanhã' : `${schedule.dayIndex + 1}º dia da sequência`}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Campo de Horário Editável + Atalho para Grade */}
+                            <div className="flex items-center space-x-2">
+                              <div className="relative flex items-center">
+                                <Clock className="h-3.5 w-3.5 text-slate-400 absolute left-2 pointer-events-none" />
+                                <input
+                                  type="time"
+                                  required
+                                  value={schedule.timeStr}
+                                  onChange={(e) =>
+                                    handleUpdateBatchDayTime(schedule.dayIndex, e.target.value)
+                                  }
+                                  className={`pl-7 pr-2 py-1.5 border rounded-lg font-mono text-xs focus:ring-1 bg-white ${
+                                    itemError
+                                      ? 'border-red-400 text-red-900 focus:ring-red-500'
+                                      : 'border-slate-300 text-slate-900 focus:ring-fuchsia-500 font-semibold'
+                                  }`}
+                                />
+                              </div>
+
+                              {/* Botão para abrir a grade de horários deste dia */}
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setActivePickerDayIndex(isPickerOpen ? null : schedule.dayIndex)
+                                }
+                                className={`px-2 py-1.5 text-[10px] font-semibold rounded-lg border transition flex items-center space-x-1 ${
+                                  isPickerOpen
+                                    ? 'bg-fuchsia-600 text-white border-fuchsia-600 shadow-2xs'
+                                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                                }`}
+                                title="Ver grade de horários disponíveis/ocupados"
+                              >
+                                <span>Grade</span>
+                                <ChevronDown className={`h-3 w-3 transition-transform ${isPickerOpen ? 'rotate-180' : ''}`} />
+                              </button>
+
+                              {itemError ? (
+                                <Ban className="h-4 w-4 text-red-500 shrink-0" title={itemError} />
+                              ) : (
+                                <Check className="h-4 w-4 text-emerald-600 shrink-0" title="Horário livre e exclusivo" />
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center space-x-1.5">
-                            <input
-                              type="time"
-                              value={schedule.timeStr}
-                              onChange={(e) =>
-                                handleUpdateBatchDayTime(schedule.dayIndex, e.target.value)
-                              }
-                              className="px-1.5 py-1 border border-slate-300 rounded font-mono text-xs bg-white focus:ring-1 focus:ring-fuchsia-500"
-                            />
-                            {isTimeConflict ? (
-                              <Ban className="h-4 w-4 text-red-500 shrink-0" title="Horário ocupado!" />
-                            ) : (
-                              <Check className="h-4 w-4 text-emerald-600 shrink-0" title="Horário livre" />
-                            )}
-                          </div>
+                          {/* Mensagem de Erro Inline na Linha Específica */}
+                          {itemError && (
+                            <div className="mt-2 pt-2 border-t border-red-200 flex items-center space-x-1.5 text-[11px] text-red-700 font-medium">
+                              <AlertCircle className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                              <span>{itemError}</span>
+                            </div>
+                          )}
+
+                          {/* Grade de Horários "Disponível/Ocupado" aberta para este dia */}
+                          {isPickerOpen && (
+                            <div className="mt-3 pt-3 border-t border-slate-200 space-y-2 bg-slate-50 p-2.5 rounded-lg animate-in fade-in duration-150">
+                              <div className="flex items-center justify-between text-[10px]">
+                                <span className="font-semibold text-slate-700">
+                                  Selecione um horário comercial livre para o dia {schedule.dateFormatted}:
+                                </span>
+                                <span className="text-[9px] text-slate-400 flex items-center space-x-2">
+                                  <span className="flex items-center space-x-1">
+                                    <span className="w-2 h-2 rounded bg-emerald-100 border border-emerald-300"></span>
+                                    <span>Livre</span>
+                                  </span>
+                                  <span className="flex items-center space-x-1">
+                                    <span className="w-2 h-2 rounded bg-slate-100 border border-slate-300"></span>
+                                    <span>Ocupado</span>
+                                  </span>
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-4 sm:grid-cols-8 md:grid-cols-12 gap-1 max-h-32 overflow-y-auto p-1 bg-white rounded border border-slate-200">
+                                {commercialTimeSlots.map((slot) => {
+                                  // Considera ocupado se está no banco OU se já foi escolhido em outro dia da lista
+                                  const isUsedInOtherDay = batchSchedules.some(
+                                    (other) => other.dayIndex !== schedule.dayIndex && other.timeStr === slot.time
+                                  );
+                                  const isOccupied = slot.isBusy || isUsedInOtherDay;
+                                  const isSelected = schedule.timeStr === slot.time;
+
+                                  return (
+                                    <button
+                                      key={slot.time}
+                                      type="button"
+                                      disabled={isOccupied}
+                                      onClick={() => {
+                                        handleUpdateBatchDayTime(schedule.dayIndex, slot.time);
+                                        setActivePickerDayIndex(null);
+                                      }}
+                                      title={
+                                        isOccupied
+                                          ? `Horário ${slot.time} ocupado`
+                                          : `Escolher ${slot.time}`
+                                      }
+                                      className={`px-1 py-1 rounded text-[10px] font-mono transition text-center ${
+                                        isSelected
+                                          ? 'bg-fuchsia-600 text-white font-bold ring-2 ring-fuchsia-300'
+                                          : isOccupied
+                                          ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed line-through'
+                                          : 'bg-white border border-emerald-200 text-emerald-800 hover:bg-emerald-50 hover:border-emerald-300 shadow-2xs font-medium'
+                                      }`}
+                                    >
+                                      {slot.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
 
-                  {/* Alerta de conflito interno no lote ou com o banco */}
-                  {batchConflicts.hasError && (
-                    <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] flex items-start space-x-2">
+                  {/* Resumo da Validação do Lote */}
+                  {batchConflicts.hasError ? (
+                    <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-xs flex items-start space-x-2">
                       <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
                       <span>{batchConflicts.message}</span>
                     </div>
-                  )}
-
-                  {!batchConflicts.hasError && (
-                    <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center space-x-1.5">
-                      <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                  ) : (
+                    <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center space-x-2">
+                      <Check className="h-4 w-4 text-emerald-600 shrink-0" />
                       <span>
-                        Todos os <strong>{batchSchedules.length} horários</strong> estão livres, exclusivos e prontos para publicação contínua!
+                        Excelente! Todos os <strong>{batchSchedules.length} horários</strong> estão válidos, livres e sem nenhuma colisão.
                       </span>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* POST ÚNICO (DATA MANUAL) */}
+              {/* POST ÚNICO (DATA MANUAL): VOLTA AO COMPORTAMENTO DE CAMPO ÚNICO */}
               {schedulePeriod === 'CUSTOM' && (
-                <div className="space-y-3 pt-2 border-t border-slate-200">
+                <div className="space-y-3 pt-3 border-t border-slate-200">
                   <div className="flex items-center justify-between">
                     <label className="text-[11px] font-semibold text-slate-700">
-                      Data & Horário Específico:
+                      Data & Horário Específico (Post Único):
                     </label>
                   </div>
 
@@ -901,6 +1039,16 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                 </div>
               )}
 
+              {/* MODO IMEDIATO */}
+              {schedulePeriod === 'IMMEDIATE' && (
+                <div className="p-3 bg-fuchsia-50/60 border border-fuchsia-200 rounded-lg text-xs text-fuchsia-900 flex items-center space-x-2">
+                  <Send className="h-4 w-4 text-fuchsia-600 shrink-0" />
+                  <span>
+                    A publicação será processada e disparada <strong>imediatamente</strong> na Meta Graph API sem agendamento.
+                  </span>
+                </div>
+              )}
+
               {scheduleError && (
                 <p className="text-[11px] text-red-600 font-medium flex items-center space-x-1">
                   <AlertCircle className="h-3.5 w-3.5 shrink-0" />
@@ -916,8 +1064,8 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                 isSubmitting ||
                 isPublishing ||
                 isUploading ||
-                Boolean(hasTimeConflict) ||
-                (['5_DAYS', '10_DAYS', '15_DAYS'].includes(schedulePeriod) && batchConflicts.hasError)
+                (['5_DAYS', '10_DAYS', '15_DAYS'].includes(schedulePeriod) && batchConflicts.hasError) ||
+                (schedulePeriod === 'CUSTOM' && (Boolean(hasTimeConflict) || !scheduledDate))
               }
               className="w-full py-2.5 px-4 bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-semibold rounded-lg shadow-xs flex items-center justify-center space-x-2 transition disabled:opacity-50"
             >
@@ -930,13 +1078,13 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                 <>
                   <Layers className="h-4 w-4" />
                   <span>
-                    Criar Campanha de {batchSchedules.length} Posts ({batchSchedules.length} Dias Consecutivos)
+                    Confirmar Agendamento de {batchSchedules.length} dias
                   </span>
                 </>
-              ) : scheduledDate ? (
+              ) : schedulePeriod === 'CUSTOM' ? (
                 <>
                   <Calendar className="h-4 w-4" />
-                  <span>Agendar Publicação ({new Date(scheduledDate).toLocaleDateString('pt-BR')})</span>
+                  <span>Agendar Publicação ({scheduledDate ? new Date(scheduledDate).toLocaleDateString('pt-BR') : ''})</span>
                 </>
               ) : (
                 <>
