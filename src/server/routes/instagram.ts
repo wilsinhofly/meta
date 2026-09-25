@@ -188,6 +188,40 @@ export async function instagramRoutes(fastify: FastifyInstance) {
 
     const { mediaType, caption, mediaUrl, scheduledFor } = parseResult.data;
 
+    // Regra anti-repetição de horário exato (mesmo HH:mm de outro post agendado)
+    if (scheduledFor) {
+      const targetDate = new Date(scheduledFor);
+      if (isNaN(targetDate.getTime())) {
+        return reply.code(400).send({ error: 'Data de agendamento inválida.' });
+      }
+
+      if (targetDate.getTime() <= Date.now()) {
+        return reply.code(400).send({
+          error: 'A data/horário de agendamento deve ser futura (pelo menos alguns minutos à frente).',
+        });
+      }
+
+      const allPosts = await db.getPosts();
+      const targetTimeStr = targetDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+      // Procura se já existe algum post agendado (SCHEDULED) com este exato horário (HH:mm)
+      const conflictingPost = allPosts.find((p) => {
+        if (p.status !== 'SCHEDULED' || !p.scheduledFor) return false;
+        const pDate = new Date(p.scheduledFor);
+        const pTimeStr = pDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        return pTimeStr === targetTimeStr;
+      });
+
+      if (conflictingPost && conflictingPost.scheduledFor) {
+        const conflictDateFormatted = new Date(conflictingPost.scheduledFor).toLocaleString('pt-BR');
+        return reply.code(409).send({
+          error: `O horário ${targetTimeStr} já está em uso na programação (no post agendado para ${conflictDateFormatted}). Por recomendação do algoritmo, escolha um horário diferente (ex: ${targetTimeStr.slice(0, 3)}${(parseInt(targetTimeStr.slice(3)) + 7) % 60}).`,
+          conflictingTime: targetTimeStr,
+          conflictingPostId: conflictingPost.id,
+        });
+      }
+    }
+
     const post = await db.addPost({
       igUserId: config.INSTAGRAM_BUSINESS_ACCOUNT_ID,
       mediaType,
@@ -217,7 +251,7 @@ export async function instagramRoutes(fastify: FastifyInstance) {
 
     return reply.code(201).send({
       message: scheduledFor
-        ? `Post agendado para ${scheduledFor} e enfileirado na BullMQ`
+        ? `Post agendado para ${new Date(scheduledFor).toLocaleString('pt-BR')} e enfileirado na BullMQ`
         : 'Processo de publicação em 2 fases iniciado na Meta Graph API',
       post,
       jobId: job.id,

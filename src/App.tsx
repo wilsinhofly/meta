@@ -142,10 +142,18 @@ export default function App() {
         body: JSON.stringify(postData),
       });
       const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const errorMsg = data.error || data.message || 'Erro ao agendar publicação.';
+        showToast(`⚠️ ${errorMsg}`);
+        throw new Error(errorMsg);
+      }
       showToast(data.message || 'Publicação enviada para o pipeline da Meta.');
       await loadData();
-    } catch {
-      showToast('Erro ao agendar publicação.');
+    } catch (err: any) {
+      if (!err.message?.startsWith('⚠️')) {
+        showToast(err.message || 'Erro ao agendar publicação.');
+      }
+      throw err;
     }
   };
 
