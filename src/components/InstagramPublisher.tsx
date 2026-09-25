@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { 
   Instagram, 
   Video, 
@@ -16,7 +16,9 @@ import {
   FileCheck,
   CalendarDays,
   Check,
-  AlertTriangle
+  AlertTriangle,
+  Lightbulb,
+  Ban
 } from 'lucide-react';
 import { InstagramPost } from '../types.js';
 
@@ -39,9 +41,16 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
   const [mediaType, setMediaType] = useState<'IMAGE' | 'REELS' | 'STORIES'>('REELS');
   const [caption, setCaption] = useState('Lançamento exclusivo da semana! Tênis e vestuário com frete grátis para todo o Brasil. Toque na sacolinha para comprar no Instagram Shop! 👟🔥 #streetwear #lifestyle');
   const [mediaUrl, setMediaUrl] = useState('https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4');
+  
+  // Período selecionado: 'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'
+  const [schedulePeriod, setSchedulePeriod] = useState<'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'>('CUSTOM');
   const [scheduledDate, setScheduledDate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+
+  // Lista de horários ocupados vinda diretamente da rota dedicada GET /api/instagram/scheduled-times
+  const [serverBusyTimes, setServerBusyTimes] = useState<string[]>([]);
+  const [isLoadingBusyTimes, setIsLoadingBusyTimes] = useState(false);
 
   // Estados de Upload de Arquivo
   const [isUploading, setIsUploading] = useState(false);
@@ -51,11 +60,35 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Mapear horários (HH:mm) já ocupados em publicações agendadas
+  // Buscar os horários ocupados da API
+  const fetchBusyTimes = useCallback(async () => {
+    setIsLoadingBusyTimes(true);
+    try {
+      const res = await fetch('/api/instagram/scheduled-times');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.busyTimes)) {
+          setServerBusyTimes(data.busyTimes);
+        }
+      }
+    } catch {
+      // Ignora silenciosamente fallback local
+    } finally {
+      setIsLoadingBusyTimes(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchBusyTimes();
+  }, [fetchBusyTimes, posts]);
+
+  // Mapear horários (HH:mm) ocupados (combina servidor e posts recebidos por props)
   const scheduledTimeSlots = useMemo(() => {
-    const slots = new Map<string, { dateFormatted: string; post: InstagramPost }>();
+    const slots = new Map<string, { dateFormatted: string; post?: InstagramPost }>();
+    
+    // Alimenta pelos posts da prop
     posts.forEach((p) => {
-      if (p.status === 'SCHEDULED' && p.scheduledFor) {
+      if (['SCHEDULED', 'DRAFT'].includes(p.status) && p.scheduledFor) {
         const d = new Date(p.scheduledFor);
         const timeKey = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
         slots.set(timeKey, {
@@ -64,8 +97,18 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
         });
       }
     });
+
+    // Garante que qualquer horário retornado pela rota GET /api/instagram/scheduled-times esteja registrado
+    serverBusyTimes.forEach((timeStr) => {
+      if (!slots.has(timeStr)) {
+        slots.set(timeStr, {
+          dateFormatted: 'post agendado',
+        });
+      }
+    });
+
     return slots;
-  }, [posts]);
+  }, [posts, serverBusyTimes]);
 
   // Extrair hora e minuto do input datetime-local atual
   const currentTimeSelected = useMemo(() => {
@@ -84,40 +127,114 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
     return null;
   }, [currentTimeSelected, scheduledTimeSlots]);
 
-  // Helper para adicionar dias rapidamente com recomendação de horário aleatorizado/orgânico
-  const handleQuickScheduleDays = (days: number) => {
-    const target = new Date();
-    target.setDate(target.getDate() + days);
+  // Grade de horários de engajamento comercial (9h às 21h) para seleção visual
+  const commercialTimeSlots = useMemo(() => {
+    const slots: { time: string; label: string; isBusy: boolean }[] = [];
+    const baseHours = [9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21];
+    const minutes = [0, 15, 30, 45];
 
-    // Sugere horários estratégicos com minutos quebrados (algoritmo orgânico do Instagram)
-    const organicMinutes = [7, 13, 21, 29, 37, 44, 52];
-    const preferredHours = [10, 12, 15, 18, 19, 21];
-
-    let foundHour = 18;
-    let foundMinute = 27;
-
-    // Tenta encontrar uma combinação de hora:minuto que não esteja ocupada
-    let attempts = 0;
-    while (attempts < 50) {
-      const h = preferredHours[Math.floor(Math.random() * preferredHours.length)];
-      const m = organicMinutes[Math.floor(Math.random() * organicMinutes.length)];
-      const testKey = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-      if (!scheduledTimeSlots.has(testKey)) {
-        foundHour = h;
-        foundMinute = m;
-        break;
+    for (const h of baseHours) {
+      for (const m of minutes) {
+        const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        const isBusy = scheduledTimeSlots.has(timeStr);
+        slots.push({
+          time: timeStr,
+          label: timeStr,
+          isBusy,
+        });
       }
-      attempts++;
+    }
+    return slots;
+  }, [scheduledTimeSlots]);
+
+  // Algoritmo de Recomendação: busca um horário livre com alta taxa de engajamento
+  const getRecommendedFreeTime = useCallback(() => {
+    const candidateSlots = [
+      { h: 10, m: 15 },
+      { h: 12, m: 30 },
+      { h: 15, m: 45 },
+      { h: 18, m: 20 },
+      { h: 19, m: 10 },
+      { h: 20, m: 35 },
+      { h: 9, m: 45 },
+      { h: 11, m: 20 },
+      { h: 16, m: 15 },
+      { h: 17, m: 50 },
+      { h: 21, m: 15 },
+    ];
+
+    for (const slot of candidateSlots) {
+      const timeKey = `${String(slot.h).padStart(2, '0')}:${String(slot.m).padStart(2, '0')}`;
+      if (!scheduledTimeSlots.has(timeKey)) {
+        return slot;
+      }
     }
 
-    target.setHours(foundHour, foundMinute, 0, 0);
+    // Se todos os padrão estiverem ocupados, tenta com minutos dinâmicos
+    for (let h = 9; h <= 21; h++) {
+      for (let m = 7; m < 60; m += 9) {
+        const timeKey = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        if (!scheduledTimeSlots.has(timeKey)) {
+          return { h, m };
+        }
+      }
+    }
 
-    // Formatar para o formato aceito por datetime-local: YYYY-MM-DDTHH:mm
+    return { h: 18, m: 27 };
+  }, [scheduledTimeSlots]);
+
+  // Aplicar período pré-definido (5, 10, 15 dias ou Imediato) com horário livre sugerido
+  const handleSelectPeriod = (period: 'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM') => {
+    setSchedulePeriod(period);
+    setScheduleError(null);
+
+    if (period === 'IMMEDIATE') {
+      setScheduledDate('');
+      return;
+    }
+
+    let daysToAdd = 5;
+    if (period === '10_DAYS') daysToAdd = 10;
+    if (period === '15_DAYS') daysToAdd = 15;
+    if (period === 'CUSTOM') {
+      // Se não tinha data, inicializa para amanhã com horário recomendado
+      if (!scheduledDate) {
+        daysToAdd = 1;
+      } else {
+        return;
+      }
+    }
+
+    const target = new Date();
+    target.setDate(target.getDate() + daysToAdd);
+
+    const rec = getRecommendedFreeTime();
+    target.setHours(rec.h, rec.m, 0, 0);
+
     const year = target.getFullYear();
     const month = String(target.getMonth() + 1).padStart(2, '0');
     const day = String(target.getDate()).padStart(2, '0');
     const hours = String(target.getHours()).padStart(2, '0');
     const minutes = String(target.getMinutes()).padStart(2, '0');
+
+    setScheduledDate(`${year}-${month}-${day}T${hours}:${minutes}`);
+  };
+
+  // Definir apenas a hora:minuto mantendo a data já selecionada
+  const handleSelectTimeSlot = (timeStr: string) => {
+    if (scheduledTimeSlots.has(timeStr)) {
+      return; // Bloqueado, já ocupado
+    }
+
+    const base = scheduledDate ? new Date(scheduledDate) : new Date(Date.now() + 86400000);
+    const [h, m] = timeStr.split(':').map(Number);
+    base.setHours(h, m, 0, 0);
+
+    const year = base.getFullYear();
+    const month = String(base.getMonth() + 1).padStart(2, '0');
+    const day = String(base.getDate()).padStart(2, '0');
+    const hours = String(base.getHours()).padStart(2, '0');
+    const minutes = String(base.getMinutes()).padStart(2, '0');
 
     setScheduledDate(`${year}-${month}-${day}T${hours}:${minutes}`);
     setScheduleError(null);
@@ -134,6 +251,22 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
     const day = String(current.getDate()).padStart(2, '0');
     const hours = String(current.getHours()).padStart(2, '0');
     const minutes = String(current.getMinutes()).padStart(2, '0');
+
+    setScheduledDate(`${year}-${month}-${day}T${hours}:${minutes}`);
+    setScheduleError(null);
+  };
+
+  // Sugerir automaticamente um horário livre de engajamento
+  const handleAutoSuggestTime = () => {
+    const rec = getRecommendedFreeTime();
+    const base = scheduledDate ? new Date(scheduledDate) : new Date(Date.now() + 86400000 * 5);
+    base.setHours(rec.h, rec.m, 0, 0);
+
+    const year = base.getFullYear();
+    const month = String(base.getMonth() + 1).padStart(2, '0');
+    const day = String(base.getDate()).padStart(2, '0');
+    const hours = String(base.getHours()).padStart(2, '0');
+    const minutes = String(base.getMinutes()).padStart(2, '0');
 
     setScheduledDate(`${year}-${month}-${day}T${hours}:${minutes}`);
     setScheduleError(null);
@@ -441,129 +574,258 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
             </div>
 
             {/* Schedule Option */}
-            <div className="bg-slate-50/80 p-3.5 rounded-xl border border-slate-200 space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div>
-                  <label className="font-semibold text-slate-800 flex items-center space-x-1.5">
+            <div className="bg-slate-50/80 p-4 rounded-xl border border-slate-200 space-y-4">
+              <div>
+                <label className="font-semibold text-slate-800 flex items-center justify-between">
+                  <span className="flex items-center space-x-1.5">
                     <CalendarDays className="h-4 w-4 text-fuchsia-600" />
-                    <span>Programação Inteligente de Postagens</span>
-                  </label>
-                  <p className="text-[11px] text-slate-500">
-                    Defina datas futuras ou use os atalhos com horários orgânicos anti-repetição.
-                  </p>
-                </div>
-
-                {/* Atalhos rápidos para 5, 10 e 15 dias */}
-                <div className="flex items-center space-x-1.5">
-                  <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">Programar:</span>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickScheduleDays(5)}
-                    className="px-2.5 py-1 text-[11px] font-semibold rounded-md border border-fuchsia-200 bg-white hover:bg-fuchsia-50 text-fuchsia-700 transition shadow-2xs"
-                  >
-                    +5 Dias
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickScheduleDays(10)}
-                    className="px-2.5 py-1 text-[11px] font-semibold rounded-md border border-fuchsia-200 bg-white hover:bg-fuchsia-50 text-fuchsia-700 transition shadow-2xs"
-                  >
-                    +10 Dias
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleQuickScheduleDays(15)}
-                    className="px-2.5 py-1 text-[11px] font-semibold rounded-md border border-fuchsia-200 bg-white hover:bg-fuchsia-50 text-fuchsia-700 transition shadow-2xs"
-                  >
-                    +15 Dias
-                  </button>
-                </div>
-              </div>
-
-              {/* Input Datetime Local */}
-              <div className="relative">
-                <input
-                  type="datetime-local"
-                  value={scheduledDate}
-                  onChange={(e) => {
-                    setScheduledDate(e.target.value);
-                    setScheduleError(null);
-                  }}
-                  className={`w-full px-3 py-2 border rounded-lg focus:ring-1 text-xs bg-white ${
-                    hasTimeConflict
-                      ? 'border-red-400 focus:ring-red-500 text-red-900 bg-red-50/30'
-                      : scheduledDate
-                      ? 'border-emerald-300 focus:ring-emerald-500'
-                      : 'border-slate-300 focus:ring-fuchsia-500'
-                  }`}
-                />
-                {scheduledDate && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setScheduledDate('');
-                      setScheduleError(null);
-                    }}
-                    className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600 text-[10px] font-medium"
-                    title="Publicar imediatamente"
-                  >
-                    Limpar
-                  </button>
-                )}
-              </div>
-
-              {/* Alerta de Conflito de Horário (Quando tenta usar o mesmo horário HH:mm) */}
-              {hasTimeConflict && (
-                <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] space-y-1.5">
-                  <div className="flex items-start space-x-1.5 font-semibold">
-                    <AlertTriangle className="h-3.5 w-3.5 text-red-600 shrink-0 mt-0.5" />
-                    <span>Conflito: o horário {currentTimeSelected} já está em uso na programação!</span>
-                  </div>
-                  <p className="text-[10px] text-red-700 leading-relaxed pl-5">
-                    O post agendado para <strong>{hasTimeConflict.dateFormatted}</strong> já ocupa o horário {currentTimeSelected}. O Instagram pode considerar postagens em horários idênticos como comportamento automatizado repetitivo.
-                  </p>
-                  <div className="flex items-center space-x-2 pl-5 pt-0.5">
-                    <span className="text-[10px] font-medium text-slate-600">Recomendação rápida:</span>
-                    <button
-                      type="button"
-                      onClick={() => handleShiftTimeByMinutes(7)}
-                      className="px-2 py-0.5 rounded bg-white border border-red-300 text-red-700 hover:bg-red-100 font-bold text-[10px] transition"
-                    >
-                      Mudar para +7 min
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleShiftTimeByMinutes(13)}
-                      className="px-2 py-0.5 rounded bg-white border border-red-300 text-red-700 hover:bg-red-100 font-bold text-[10px] transition"
-                    >
-                      Mudar para +13 min
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Feedback quando o horário é válido e único */}
-              {scheduledDate && !hasTimeConflict && (
-                <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center space-x-1.5">
-                  <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                  <span>
-                    Horário <strong>{currentTimeSelected}</strong> aprovado e exclusivo! Nenhum outro post programado para esse minuto.
+                    <span>Programação Inteligente & Anti-Repetição</span>
                   </span>
-                </div>
-              )}
-
-              {/* Mensagem de Erro Geral de Agendamento */}
-              {scheduleError && (
-                <p className="text-[11px] text-red-600 font-medium flex items-center space-x-1">
-                  <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-                  <span>{scheduleError}</span>
+                  <span className="text-[10px] text-fuchsia-700 bg-fuchsia-50 border border-fuchsia-200 font-medium px-2 py-0.5 rounded-full">
+                    {scheduledTimeSlots.size} horários já bloqueados
+                  </span>
+                </label>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  1. Escolha o período pré-definido. 2. Selecione ou receba a recomendação de um horário livre (HH:mm).
                 </p>
+              </div>
+
+              {/* 1. SELETOR DE PERÍODO */}
+              <div>
+                <span className="text-[11px] font-semibold text-slate-700 block mb-1.5">
+                  Período de Publicação:
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('IMMEDIATE')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === 'IMMEDIATE' && !scheduledDate
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Send className="h-3 w-3" />
+                    <span>Imediato</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('5_DAYS')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === '5_DAYS'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Calendar className="h-3 w-3" />
+                    <span>Próximos 5 dias</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('10_DAYS')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === '10_DAYS'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Calendar className="h-3 w-3" />
+                    <span>Próximos 10 dias</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('15_DAYS')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === '15_DAYS'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Calendar className="h-3 w-3" />
+                    <span>Próximos 15 dias</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectPeriod('CUSTOM')}
+                    className={`py-2 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center justify-center space-x-1 transition ${
+                      schedulePeriod === 'CUSTOM'
+                        ? 'border-fuchsia-500 bg-fuchsia-50 text-fuchsia-700 shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Clock className="h-3 w-3" />
+                    <span>Data Manual</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Data e Horário Selecionados */}
+              {(scheduledDate || schedulePeriod !== 'IMMEDIATE') && (
+                <div className="space-y-3 pt-1 border-t border-slate-200/60">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <label className="text-[11px] font-semibold text-slate-700">
+                      Data & Horário Específico:
+                    </label>
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={handleAutoSuggestTime}
+                        className="text-[10px] font-semibold text-fuchsia-700 hover:text-fuchsia-900 flex items-center space-x-1 bg-fuchsia-50 border border-fuchsia-200 px-2 py-0.5 rounded transition"
+                      >
+                        <Lightbulb className="h-3 w-3 text-amber-500" />
+                        <span>Sugerir Horário Livre</span>
+                      </button>
+                      {scheduledDate && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScheduledDate('');
+                            setSchedulePeriod('IMMEDIATE');
+                            setScheduleError(null);
+                          }}
+                          className="text-[10px] text-slate-400 hover:text-red-500 font-medium"
+                        >
+                          Limpar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Input Datetime Local */}
+                  <div className="relative">
+                    <input
+                      type="datetime-local"
+                      value={scheduledDate}
+                      onChange={(e) => {
+                        setScheduledDate(e.target.value);
+                        setSchedulePeriod('CUSTOM');
+                        setScheduleError(null);
+                      }}
+                      className={`w-full px-3 py-2 border rounded-lg focus:ring-1 text-xs bg-white ${
+                        hasTimeConflict
+                          ? 'border-red-400 focus:ring-red-500 text-red-900 bg-red-50/30'
+                          : scheduledDate
+                          ? 'border-emerald-300 focus:ring-emerald-500'
+                          : 'border-slate-300 focus:ring-fuchsia-500'
+                      }`}
+                    />
+                  </div>
+
+                  {/* 2. SELETOR DE HORÁRIOS COM SLOTS OCUPADOS DESABILITADOS */}
+                  <div className="bg-white p-3 rounded-lg border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-semibold text-slate-700 uppercase tracking-wider flex items-center space-x-1">
+                        <Clock className="h-3 w-3 text-slate-400" />
+                        <span>Grade de Horários Comerciais (Janela 9h - 21h):</span>
+                      </span>
+                      <span className="text-[9px] text-slate-400 flex items-center space-x-2">
+                        <span className="flex items-center space-x-1">
+                          <span className="w-2 h-2 rounded bg-emerald-100 border border-emerald-300"></span>
+                          <span>Disponível</span>
+                        </span>
+                        <span className="flex items-center space-x-1">
+                          <span className="w-2 h-2 rounded bg-slate-100 border border-slate-200 text-slate-400"></span>
+                          <span>Ocupado (Bloqueado)</span>
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 sm:grid-cols-8 md:grid-cols-12 gap-1.5 max-h-36 overflow-y-auto p-1 bg-slate-50 rounded border border-slate-100">
+                      {commercialTimeSlots.map((slot) => {
+                        const isSelected = currentTimeSelected === slot.time;
+                        return (
+                          <button
+                            key={slot.time}
+                            type="button"
+                            disabled={slot.isBusy}
+                            onClick={() => handleSelectTimeSlot(slot.time)}
+                            title={
+                              slot.isBusy
+                                ? `Horário ${slot.time} já ocupado por outro post agendado`
+                                : `Selecionar ${slot.time}`
+                            }
+                            className={`px-1.5 py-1 rounded text-[10px] font-mono font-medium transition text-center flex items-center justify-center space-x-0.5 ${
+                              isSelected
+                                ? 'bg-fuchsia-600 text-white font-bold ring-2 ring-fuchsia-300'
+                                : slot.isBusy
+                                ? 'bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed line-through'
+                                : 'bg-white border border-emerald-200 text-emerald-800 hover:bg-emerald-50 hover:border-emerald-300 shadow-2xs'
+                            }`}
+                          >
+                            {slot.isBusy && <Ban className="h-2.5 w-2.5 text-slate-300 inline mr-0.5" />}
+                            <span>{slot.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Alerta de Conflito de Horário (Quando tenta usar o mesmo horário HH:mm) */}
+                  {hasTimeConflict && (
+                    <div className="p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-800 text-[11px] space-y-1.5">
+                      <div className="flex items-start space-x-1.5 font-semibold">
+                        <AlertTriangle className="h-3.5 w-3.5 text-red-600 shrink-0 mt-0.5" />
+                        <span>Conflito: o horário {currentTimeSelected} já está em uso na programação!</span>
+                      </div>
+                      <p className="text-[10px] text-red-700 leading-relaxed pl-5">
+                        O post agendado para <strong>{hasTimeConflict.dateFormatted}</strong> já ocupa o horário {currentTimeSelected}. O Instagram não permite horários duplicados na programação.
+                      </p>
+                      <div className="flex items-center space-x-2 pl-5 pt-0.5">
+                        <span className="text-[10px] font-medium text-slate-600">Desemparelhar agora:</span>
+                        <button
+                          type="button"
+                          onClick={() => handleShiftTimeByMinutes(7)}
+                          className="px-2 py-0.5 rounded bg-white border border-red-300 text-red-700 hover:bg-red-100 font-bold text-[10px] transition"
+                        >
+                          +7 min
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleShiftTimeByMinutes(13)}
+                          className="px-2 py-0.5 rounded bg-white border border-red-300 text-red-700 hover:bg-red-100 font-bold text-[10px] transition"
+                        >
+                          +13 min
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAutoSuggestTime}
+                          className="px-2 py-0.5 rounded bg-fuchsia-600 text-white font-bold text-[10px] hover:bg-fuchsia-700 transition"
+                        >
+                          Horário Sugerido
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Feedback quando o horário é válido e único */}
+                  {scheduledDate && !hasTimeConflict && (
+                    <div className="p-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] flex items-center justify-between">
+                      <div className="flex items-center space-x-1.5">
+                        <Check className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                        <span>
+                          Horário <strong>{currentTimeSelected}</strong> aprovado e exclusivo! Livre para agendamento.
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono text-emerald-700">
+                        {new Date(scheduledDate).toLocaleDateString('pt-BR')}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Mensagem de Erro Geral de Agendamento */}
+                  {scheduleError && (
+                    <p className="text-[11px] text-red-600 font-medium flex items-center space-x-1">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                      <span>{scheduleError}</span>
+                    </p>
+                  )}
+                </div>
               )}
 
               {/* Rodapé Informativo / Boas Práticas do Algoritmo */}
-              <div className="pt-1 border-t border-slate-200/60 flex items-center justify-between text-[10px] text-slate-500">
-                <span>💡 <strong>Dica da Meta:</strong> Varie sempre os minutos (ex: 10:07, 10:14) para engajamento orgânico.</span>
-                <span>{scheduledTimeSlots.size} horários reservados</span>
+              <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[10px] text-slate-500">
+                <span>💡 <strong>Regra de Algoritmo:</strong> Cada post agendado deve ter um minuto único (HH:mm).</span>
+                <span>{scheduledTimeSlots.size} horários exclusivos</span>
               </div>
             </div>
 

@@ -3,7 +3,7 @@
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { db } from '../db/prisma.js';
+import { db, InstagramPostData } from '../db/prisma.js';
 import { instagramPublishQueue, instagramTokenRefreshQueue } from '../queues/index.js';
 import { config } from '../config.js';
 import { exchangeInstagramToken } from '../services/instagram-token.service.js';
@@ -21,6 +21,44 @@ const exchangeTokenSchema = z.object({
   clientSecret: z.string().optional(),
   persistToEnv: z.boolean().optional().default(true),
 });
+
+/**
+ * Função reutilizável para extrair HH:mm no formato 24h
+ */
+export function extractTimeSlot(date: Date | string): string {
+  const d = typeof date === 'string' ? new Date(date) : date;
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+/**
+ * Função reutilizável para consultar se um determinado horário (HH:mm)
+ * já está em uso por QUALQUER post com status SCHEDULED ou DRAFT.
+ * Retorna { available: boolean, conflictingPost?: InstagramPostData, timeSlot: string }
+ */
+export async function isTimeSlotAvailable(
+  proposedDateTime: Date | string,
+  excludePostId?: string
+): Promise<{ available: boolean; conflictingPost?: InstagramPostData; timeSlot: string }> {
+  const targetDate = typeof proposedDateTime === 'string' ? new Date(proposedDateTime) : proposedDateTime;
+  const targetTimeSlot = extractTimeSlot(targetDate);
+  const allPosts = await db.getPosts();
+
+  const conflictingPost = allPosts.find((p) => {
+    if (excludePostId && p.id === excludePostId) return false;
+    // Checa posts agendados ou rascunhos com data agendada definida
+    if (!['SCHEDULED', 'DRAFT'].includes(p.status) || !p.scheduledFor) {
+      return false;
+    }
+    const pTimeSlot = extractTimeSlot(p.scheduledFor);
+    return pTimeSlot === targetTimeSlot;
+  });
+
+  return {
+    available: !conflictingPost,
+    conflictingPost,
+    timeSlot: targetTimeSlot,
+  };
+}
 
 /**
  * Middleware para proteger endpoints administrativos de credenciais
@@ -50,6 +88,35 @@ export async function instagramRoutes(fastify: FastifyInstance) {
     return {
       total: posts.length,
       posts,
+    };
+  });
+
+  /**
+   * Rota dedicada: Retorna apenas a lista de horários ocupados (HH:mm)
+   * por posts agendados ou rascunhos (SCHEDULED ou DRAFT com scheduledFor)
+   */
+  fastify.get('/api/instagram/scheduled-times', async () => {
+    const posts = await db.getPosts();
+    const busySlots: { timeSlot: string; scheduledFor: string; postId: string; status: string }[] = [];
+    const uniqueTimes = new Set<string>();
+
+    for (const post of posts) {
+      if (['SCHEDULED', 'DRAFT'].includes(post.status) && post.scheduledFor) {
+        const timeSlot = extractTimeSlot(post.scheduledFor);
+        busySlots.push({
+          timeSlot,
+          scheduledFor: new Date(post.scheduledFor).toISOString(),
+          postId: post.id,
+          status: post.status,
+        });
+        uniqueTimes.add(timeSlot);
+      }
+    }
+
+    return {
+      totalBusySlots: busySlots.length,
+      busyTimes: Array.from(uniqueTimes).sort(),
+      details: busySlots,
     };
   });
 
@@ -201,23 +268,17 @@ export async function instagramRoutes(fastify: FastifyInstance) {
         });
       }
 
-      const allPosts = await db.getPosts();
-      const targetTimeStr = targetDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-
-      // Procura se já existe algum post agendado (SCHEDULED) com este exato horário (HH:mm)
-      const conflictingPost = allPosts.find((p) => {
-        if (p.status !== 'SCHEDULED' || !p.scheduledFor) return false;
-        const pDate = new Date(p.scheduledFor);
-        const pTimeStr = pDate.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        return pTimeStr === targetTimeStr;
-      });
-
-      if (conflictingPost && conflictingPost.scheduledFor) {
-        const conflictDateFormatted = new Date(conflictingPost.scheduledFor).toLocaleString('pt-BR');
+      // Validação centralizada e reutilizável
+      const check = await isTimeSlotAvailable(targetDate);
+      if (!check.available && check.conflictingPost) {
+        const conflictDateFormatted = check.conflictingPost.scheduledFor
+          ? new Date(check.conflictingPost.scheduledFor).toLocaleString('pt-BR')
+          : 'data futura';
         return reply.code(409).send({
-          error: `O horário ${targetTimeStr} já está em uso na programação (no post agendado para ${conflictDateFormatted}). Por recomendação do algoritmo, escolha um horário diferente (ex: ${targetTimeStr.slice(0, 3)}${(parseInt(targetTimeStr.slice(3)) + 7) % 60}).`,
-          conflictingTime: targetTimeStr,
-          conflictingPostId: conflictingPost.id,
+          error: `Já existe um post agendado para o horário ${check.timeSlot}. Escolha outro horário.`,
+          message: `Já existe um post agendado para o horário ${check.timeSlot}. Escolha outro horário. (Conflito com post agendado para ${conflictDateFormatted})`,
+          conflictingTime: check.timeSlot,
+          conflictingPostId: check.conflictingPost.id,
         });
       }
     }
