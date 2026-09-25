@@ -37,12 +37,13 @@ export interface Conversation {
 
 export interface InstagramPost {
   id: string;
+  campaignId?: string;
   igUserId: string;
   mediaType: 'IMAGE' | 'REELS' | 'CAROUSEL' | 'STORIES';
   caption: string;
   mediaUrl: string;
   scheduledFor?: string;
-  status: 'DRAFT' | 'SCHEDULED' | 'PROCESSING_CONTAINER' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'FAILED';
+  status: 'DRAFT' | 'SCHEDULED' | 'PROCESSING_CONTAINER' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'CANCELLED' | 'FAILED';
   containerId?: string;
   metaMediaId?: string;
   errorCode?: string;

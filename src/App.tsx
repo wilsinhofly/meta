@@ -157,6 +157,52 @@ export default function App() {
     }
   };
 
+  const handleScheduleCampaign = async (campaignData: {
+    mediaType: 'IMAGE' | 'REELS' | 'STORIES';
+    caption: string;
+    mediaUrl: string;
+    daysCount: number;
+    schedules: Array<{ dayIndex: number; scheduledFor: string }>;
+  }) => {
+    try {
+      const res = await fetch('/api/instagram/schedule-campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(campaignData),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const errorMsg = data.error || data.message || 'Erro ao agendar campanha.';
+        showToast(`⚠️ ${errorMsg}`);
+        throw new Error(errorMsg);
+      }
+      showToast(data.message || `Campanha de ${campaignData.daysCount} dias criada com sucesso!`);
+      await loadData();
+      return data;
+    } catch (err: any) {
+      if (!err.message?.startsWith('⚠️')) {
+        showToast(err.message || 'Erro ao agendar campanha.');
+      }
+      throw err;
+    }
+  };
+
+  const handleCancelCampaign = async (campaignId: string) => {
+    try {
+      const res = await fetch(`/api/instagram/campaigns/${campaignId}/cancel`, {
+        method: 'POST',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao cancelar campanha');
+      }
+      showToast(data.message || 'Campanha cancelada com sucesso!');
+      await loadData();
+    } catch (err: any) {
+      showToast(`⚠️ ${err.message || 'Falha ao cancelar campanha'}`);
+    }
+  };
+
   const handleSendWhatsAppMessage = async (to: string, message: string) => {
     try {
       await fetch('/api/queues/simulate', {
@@ -243,6 +289,8 @@ export default function App() {
           <InstagramPublisher
             posts={posts}
             onSchedulePost={handleSchedulePost}
+            onScheduleCampaign={handleScheduleCampaign}
+            onCancelCampaign={handleCancelCampaign}
             isPublishing={isSimulating}
           />
         )}

@@ -58,6 +58,7 @@ enum PostPublishStatus {
   PROCESSING_CONTAINER
   READY_TO_PUBLISH
   PUBLISHED
+  CANCELLED
   FAILED
 }
 
@@ -150,6 +151,7 @@ model Message {
 
 model InstagramPost {
   id           String             @id @default(uuid())
+  campaignId   String?            // Agrupador para campanhas em lote (5, 10, 15 dias)
   igUserId     String
   mediaType    InstagramMediaType @default(IMAGE)
   caption      String
@@ -167,6 +169,7 @@ model InstagramPost {
 
   @@index([status])
   @@index([scheduledFor])
+  @@index([campaignId])
 }
 
 model QueueJobLog {

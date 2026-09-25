@@ -3,6 +3,7 @@
  */
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { randomUUID } from 'crypto';
 import { db, InstagramPostData } from '../db/prisma.js';
 import { instagramPublishQueue, instagramTokenRefreshQueue } from '../queues/index.js';
 import { config } from '../config.js';
@@ -14,6 +15,20 @@ const postSchema = z.object({
   caption: z.string().min(1),
   mediaUrl: z.string().url(),
   scheduledFor: z.string().datetime().optional(),
+  campaignId: z.string().optional(),
+});
+
+const campaignScheduleSchema = z.object({
+  mediaType: z.enum(['IMAGE', 'REELS', 'STORIES']),
+  caption: z.string().min(1),
+  mediaUrl: z.string().url(),
+  daysCount: z.number().int().min(1).max(30),
+  schedules: z.array(
+    z.object({
+      dayIndex: z.number().int(),
+      scheduledFor: z.string().datetime(),
+    })
+  ),
 });
 
 const exchangeTokenSchema = z.object({
@@ -288,6 +303,7 @@ export async function instagramRoutes(fastify: FastifyInstance) {
       mediaType,
       caption,
       mediaUrl,
+      campaignId: parseResult.data.campaignId,
       scheduledFor: scheduledFor ? new Date(scheduledFor) : undefined,
       status: scheduledFor ? 'SCHEDULED' : 'PROCESSING_CONTAINER',
     });
@@ -318,4 +334,126 @@ export async function instagramRoutes(fastify: FastifyInstance) {
       jobId: job.id,
     });
   });
+
+  /**
+   * CRIAÇÃO EM LOTE: Agendar campanha com 1 post por dia durante N dias consecutivos
+   * Todos compartilham o mesmo campaignId (UUID) com validação de horário único
+   */
+  fastify.post('/api/instagram/schedule-campaign', async (request: FastifyRequest, reply: FastifyReply) => {
+    const parseResult = campaignScheduleSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.code(400).send({ error: 'Dados da campanha inválidos', details: parseResult.error.format() });
+    }
+
+    const { mediaType, caption, mediaUrl, daysCount, schedules } = parseResult.data;
+
+    if (schedules.length !== daysCount) {
+      return reply.code(400).send({
+        error: `A quantidade de agendamentos (${schedules.length}) não confere com o período de ${daysCount} dias.`,
+      });
+    }
+
+    // 1. Validação estrita de cada horário proposto contra o banco
+    const seenTimesInBatch = new Set<string>();
+    for (const item of schedules) {
+      const targetDate = new Date(item.scheduledFor);
+      if (isNaN(targetDate.getTime()) || targetDate.getTime() <= Date.now()) {
+        return reply.code(400).send({
+          error: `Data de agendamento inválida ou no passado para o dia ${item.dayIndex + 1}.`,
+        });
+      }
+
+      const slotTime = extractTimeSlot(targetDate);
+
+      // Não pode haver colisão interna dentro do próprio lote
+      if (seenTimesInBatch.has(slotTime)) {
+        return reply.code(409).send({
+          error: `Já existe um post agendado para o horário ${slotTime}. Escolha outro horário. (Conflito interno no lote)`,
+          timeSlot: slotTime,
+        });
+      }
+      seenTimesInBatch.add(slotTime);
+
+      // Não pode haver colisão com nenhum post já agendado no banco
+      const check = await isTimeSlotAvailable(targetDate);
+      if (!check.available && check.conflictingPost) {
+        const conflictDateFormatted = check.conflictingPost.scheduledFor
+          ? new Date(check.conflictingPost.scheduledFor).toLocaleString('pt-BR')
+          : 'data futura';
+        return reply.code(409).send({
+          error: `Já existe um post agendado para o horário ${check.timeSlot}. Escolha outro horário.`,
+          message: `Já existe um post agendado para o horário ${check.timeSlot}. Escolha outro horário. (Colide com post de ${conflictDateFormatted})`,
+          conflictingTime: check.timeSlot,
+          conflictingPostId: check.conflictingPost.id,
+        });
+      }
+    }
+
+    // 2. Gerar UUID único para a campanha
+    const campaignId = randomUUID();
+    const createdPosts: InstagramPostData[] = [];
+    const now = Date.now();
+
+    for (const item of schedules) {
+      const scheduledDate = new Date(item.scheduledFor);
+      const post = await db.addPost({
+        campaignId,
+        igUserId: config.INSTAGRAM_BUSINESS_ACCOUNT_ID,
+        mediaType,
+        caption,
+        mediaUrl,
+        scheduledFor: scheduledDate,
+        status: 'SCHEDULED',
+      });
+
+      const delay = Math.max(0, scheduledDate.getTime() - now);
+
+      await instagramPublishQueue.add(
+        `publish-${post.id}`,
+        {
+          postId: post.id,
+          mediaType: post.mediaType,
+          mediaUrl: post.mediaUrl,
+          caption: post.caption,
+        },
+        { delay }
+      );
+
+      createdPosts.push(post);
+    }
+
+    return reply.code(201).send({
+      success: true,
+      campaignId,
+      totalPosts: createdPosts.length,
+      daysCount,
+      message: `Campanha de ${daysCount} dias agendada com sucesso! ${createdPosts.length} posts criados com horários exclusivos.`,
+      posts: createdPosts,
+    });
+  });
+
+  /**
+   * CANCELAR CAMPANHA INTEIRA:
+   * Altera todos os posts daquele campaignId de SCHEDULED para CANCELLED
+   */
+  fastify.post(
+    '/api/instagram/campaigns/:campaignId/cancel',
+    async (request: FastifyRequest<{ Params: { campaignId: string } }>, reply: FastifyReply) => {
+      const { campaignId } = request.params;
+      if (!campaignId) {
+        return reply.code(400).send({ error: 'campaignId é obrigatório.' });
+      }
+
+      const result = await db.cancelCampaignPosts(campaignId);
+      const updatedPosts = await db.getPostsByCampaign(campaignId);
+
+      return reply.code(200).send({
+        success: true,
+        campaignId,
+        cancelledCount: result.cancelledCount,
+        message: `Campanha cancelada com sucesso. ${result.cancelledCount} publicações agendadas foram canceladas.`,
+        posts: updatedPosts,
+      });
+    }
+  );
 }

@@ -45,13 +45,14 @@ export interface ConversationData {
 
 export interface InstagramPostData {
   id: string;
+  campaignId?: string;
   igUserId: string;
   mediaType: 'IMAGE' | 'REELS' | 'STORIES';
   caption: string;
   mediaUrl: string;
   thumbnailUrl?: string;
   scheduledFor?: Date;
-  status: 'DRAFT' | 'SCHEDULED' | 'PROCESSING_CONTAINER' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'FAILED';
+  status: 'DRAFT' | 'SCHEDULED' | 'PROCESSING_CONTAINER' | 'READY_TO_PUBLISH' | 'PUBLISHED' | 'CANCELLED' | 'FAILED';
   containerId?: string;
   metaMediaId?: string;
   errorCode?: string;
@@ -345,6 +346,21 @@ class MemoryDatabase {
       return this.posts[index];
     }
     return null;
+  }
+
+  async cancelCampaignPosts(campaignId: string) {
+    let cancelledCount = 0;
+    this.posts.forEach((p) => {
+      if (p.campaignId === campaignId && p.status === 'SCHEDULED') {
+        p.status = 'CANCELLED';
+        cancelledCount++;
+      }
+    });
+    return { cancelledCount };
+  }
+
+  async getPostsByCampaign(campaignId: string) {
+    return this.posts.filter((p) => p.campaignId === campaignId);
   }
 
   // Meta Credentials Storage
