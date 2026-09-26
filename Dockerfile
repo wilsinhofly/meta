@@ -8,7 +8,7 @@ RUN npm install --legacy-peer-deps
 # Copia código e compila
 COPY . .
 RUN npm run build
-RUN mkdir -p public/uploads
+RUN mkdir -p public/uploads /app/data
 
 ENV NODE_ENV=production
 EXPOSE 3000
