@@ -29,6 +29,12 @@ const envSchema = z.object({
   INSTAGRAM_BUSINESS_ACCOUNT_ID: z.string().default(process.env.INSTAGRAM_ACCOUNT_ID || process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID || '17841443995002822'),
   FACEBOOK_PAGE_ID: z.string().default(process.env.FACEBOOK_PAGE_ID || '100000000000000'),
   PUBLIC_CDN_BASE_URL: z.string().default(process.env.APP_URL || process.env.PUBLIC_CDN_BASE_URL || 'https://meta.3facil.com'),
+
+  // Intervalo mínimo de segurança entre publicações para a mesma conta (anti-burst)
+  INSTAGRAM_PUBLISH_RATE_LIMIT_MINUTES: z
+    .string()
+    .default(process.env.INSTAGRAM_PUBLISH_RATE_LIMIT_MINUTES || '30')
+    .transform((v) => parseInt(v, 10)),
 });
 
 export const config = envSchema.parse(process.env);

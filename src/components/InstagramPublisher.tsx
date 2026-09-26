@@ -1480,9 +1480,17 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                 <strong className="text-red-600 font-semibold">
                   {retryModalCampaign.failedCount} post(s) com falha
                 </strong>{' '}
-                para <strong className="text-blue-600 font-semibold">SCHEDULED</strong>,
-                limpará os erros antigos e reenfileirará os jobs imediatamente na fila da BullMQ.
+                para <strong className="text-blue-600 font-semibold">SCHEDULED</strong> e limpará os erros anteriores.
               </p>
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 space-y-1">
+                <p className="font-semibold flex items-center space-x-1.5">
+                  <Clock className="h-3.5 w-3.5 text-amber-700" />
+                  <span>Proteção Anti-Rajada e Redistribuição Diária</span>
+                </p>
+                <p className="text-slate-600">
+                  Posts cuja data original já expirou serão distribuídos automaticamente para os <strong>próximos dias consecutivos (1 post por dia)</strong> com horários exclusivos sem repetição, evitando rajada de publicações. A trava de segurança de no mínimo 30 min por conta também permanece ativa.
+                </p>
+              </div>
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">

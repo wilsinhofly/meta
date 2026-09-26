@@ -23,6 +23,7 @@ export interface QueueJob<T = any> {
   attempts: number;
   error?: string;
   createdAt: number;
+  delayUntil?: number;
   processedAt?: number;
   completedAt?: number;
   result?: any;
@@ -42,24 +43,27 @@ class AppQueue<T = any> {
   }
 
   async add(name: string, data: T, opts?: { delay?: number; attempts?: number }): Promise<QueueJob<T>> {
+    const delay = opts?.delay && opts.delay > 0 ? opts.delay : 0;
+    const now = Date.now();
     const job: QueueJob<T> = {
-      id: `${this.name}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      id: `${this.name}-${now}-${Math.random().toString(36).slice(2, 7)}`,
       name,
       data,
       queueName: this.name,
       status: 'waiting',
       progress: 0,
       attempts: 0,
-      createdAt: Date.now(),
+      createdAt: now,
+      delayUntil: delay > 0 ? now + delay : undefined,
     };
 
     this.jobs.unshift(job);
 
     // Se houver delay, agenda a execução; caso contrário, dispara o worker
-    if (opts?.delay && opts.delay > 0) {
+    if (delay > 0) {
       setTimeout(() => {
         this.processNext();
-      }, opts.delay);
+      }, delay);
     } else {
       setTimeout(() => {
         this.processNext();
@@ -90,7 +94,12 @@ class AppQueue<T = any> {
   private async processNext() {
     if (this.isProcessing || this.handlers.length === 0) return;
 
-    const waitingJob = this.jobs.slice().reverse().find((j) => j.status === 'waiting');
+    const now = Date.now();
+    const waitingJob = this.jobs
+      .slice()
+      .reverse()
+      .find((j) => j.status === 'waiting' && (!j.delayUntil || j.delayUntil <= now));
+
     if (!waitingJob) return;
 
     this.isProcessing = true;

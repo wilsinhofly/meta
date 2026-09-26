@@ -462,9 +462,12 @@ export async function instagramRoutes(fastify: FastifyInstance) {
    * POST /api/instagram/campaigns/:campaignId/retry-failed
    * - Busca todos os posts com aquele campaignId (ou correspondência de ID) com status FAILED
    * - Opcionalmente recebe newMediaUrl para substituir a URL problemática
+   * - Se o scheduledFor original já estiver no passado (ou não existir), redistribui os posts
+   *   para os próximos dias disponíveis a partir de amanhã (1 post por dia),
+   *   com horários sem repetição/exclusivos, preservando a ordem original dos posts.
+   * - Se o scheduledFor estiver no futuro com horário livre, preserva o agendamento futuro.
    * - Reseta o status de FAILED para SCHEDULED, limpa errorCode/errorMessage/containerId
-   * - Reenfileira cada job na fila BullMQ instagram-publisher
-   * - Retorna a contagem de posts reenfileirados e os dados atualizados
+   * - Reenfileira cada job na fila BullMQ instagram-publisher com o delay correspondente
    */
   fastify.post(
     '/api/instagram/campaigns/:campaignId/retry-failed',
@@ -482,7 +485,7 @@ export async function instagramRoutes(fastify: FastifyInstance) {
         return reply.code(400).send({ error: 'campaignId é obrigatório.' });
       }
 
-      // 1. Obter todos os posts com falha desta campanha
+      // 1. Obter todos os posts com falha desta campanha ordenados
       const failedPosts = await db.getFailedPostsByCampaign(campaignId);
 
       if (failedPosts.length === 0) {
@@ -495,23 +498,93 @@ export async function instagramRoutes(fastify: FastifyInstance) {
         });
       }
 
+      // Preservar ordem cronológica / original dos posts
+      failedPosts.sort((a, b) => {
+        const timeA = a.scheduledFor ? new Date(a.scheduledFor).getTime() : new Date(a.createdAt).getTime();
+        const timeB = b.scheduledFor ? new Date(b.scheduledFor).getTime() : new Date(b.createdAt).getTime();
+        return timeA - timeB;
+      });
+
+      // 2. Coletar horários já ocupados por outros posts SCHEDULED no sistema
+      const allPosts = await db.getPosts();
+      const busyTimeSlots = new Set<string>();
+      allPosts.forEach((p) => {
+        if (['SCHEDULED', 'DRAFT'].includes(p.status) && p.scheduledFor) {
+          busyTimeSlots.add(extractTimeSlot(p.scheduledFor));
+        }
+      });
+
+      // Lista de horários preferidos estratégicos para publicações
+      const preferredHours = [9, 10, 11, 12, 14, 15, 16, 17, 18, 19, 20, 21];
+      const preferredMinutes = [7, 14, 21, 28, 35, 42, 49, 56, 11, 23, 37, 48];
+
       const retriedPosts: any[] = [];
       const now = Date.now();
+      let dayOffsetCounter = 1; // Inicia a partir de amanhã para redistribuição
 
-      // 2. Para cada post falho, resetar dados e reenfileirar na BullMQ
       for (const failedPost of failedPosts) {
-        const updatedPost = await db.resetPostForRetry(failedPost.id, newMediaUrl);
-        if (!updatedPost) continue;
+        const originalScheduledTime = failedPost.scheduledFor ? new Date(failedPost.scheduledFor).getTime() : 0;
+        let finalScheduledDate: Date;
 
-        // Se scheduledFor estiver no passado ou agora, processa imediatamente (delay 0);
-        // senão calcula o delay restante até o horário previsto
-        let delay = 0;
-        if (updatedPost.scheduledFor) {
-          const scheduledTime = new Date(updatedPost.scheduledFor).getTime();
-          delay = Math.max(0, scheduledTime - now);
+        // Se scheduledFor estiver no passado ou ausente: NÃO publicar de imediato!
+        // Redistribuir para o próximo dia útil (1 post por dia) com horário exclusivo
+        if (originalScheduledTime <= now) {
+          const targetDay = new Date();
+          targetDay.setDate(targetDay.getDate() + dayOffsetCounter);
+          dayOffsetCounter++;
+
+          // Encontrar horário sem repetição (não ocupado no banco nem usado neste lote)
+          let chosenH = 18;
+          let chosenM = 20;
+          let foundSlot = false;
+
+          for (const h of preferredHours) {
+            for (const m of preferredMinutes) {
+              const testKey = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+              if (!busyTimeSlots.has(testKey)) {
+                chosenH = h;
+                chosenM = m;
+                busyTimeSlots.add(testKey);
+                foundSlot = true;
+                break;
+              }
+            }
+            if (foundSlot) break;
+          }
+
+          if (!foundSlot) {
+            // Fallback de varredura
+            for (let h = 8; h <= 22; h++) {
+              for (let m = 1; m < 60; m += 2) {
+                const testKey = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+                if (!busyTimeSlots.has(testKey)) {
+                  chosenH = h;
+                  chosenM = m;
+                  busyTimeSlots.add(testKey);
+                  foundSlot = true;
+                  break;
+                }
+              }
+              if (foundSlot) break;
+            }
+          }
+
+          targetDay.setHours(chosenH, chosenM, 0, 0);
+          finalScheduledDate = targetDay;
+        } else {
+          // Se já estava no futuro, preserva a data futura planejada
+          finalScheduledDate = new Date(failedPost.scheduledFor!);
+          busyTimeSlots.add(extractTimeSlot(finalScheduledDate));
         }
 
-        // Reenfileirar o job na fila instagram-publisher com o novo/mesmo mediaUrl
+        // Reseta o post com os novos dados e a nova data agendada
+        const updatedPost = await db.resetPostForRetry(failedPost.id, newMediaUrl, finalScheduledDate);
+        if (!updatedPost) continue;
+
+        // Calcula o delay correspondente (sempre > 0 para agendamentos futuros)
+        const delay = Math.max(0, finalScheduledDate.getTime() - now);
+
+        // Reenfileirar na BullMQ com o delay adequado
         const job = await instagramPublishQueue.add(
           `retry-${updatedPost.id}-${Date.now()}`,
           {
@@ -526,7 +599,9 @@ export async function instagramRoutes(fastify: FastifyInstance) {
         retriedPosts.push({
           post: updatedPost,
           jobId: job.id,
+          scheduledFor: finalScheduledDate.toISOString(),
           delayMs: delay,
+          timeSlot: extractTimeSlot(finalScheduledDate),
         });
       }
 
@@ -535,7 +610,7 @@ export async function instagramRoutes(fastify: FastifyInstance) {
         campaignId,
         retriedCount: retriedPosts.length,
         newMediaUrl: newMediaUrl || null,
-        message: `${retriedPosts.length} posts com falha foram resetados e reenfileirados com sucesso na fila instagram-publisher.`,
+        message: `${retriedPosts.length} posts com falha foram reprogramados (1 por dia com horários exclusivos) e reenfileirados com segurança na fila instagram-publisher.`,
         retriedPosts,
       });
     }

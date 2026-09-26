@@ -369,7 +369,7 @@ class MemoryDatabase {
     );
   }
 
-  async resetPostForRetry(id: string, newMediaUrl?: string) {
+  async resetPostForRetry(id: string, newMediaUrl?: string, newScheduledFor?: Date) {
     const post = this.posts.find((p) => p.id === id);
     if (!post) return null;
 
@@ -380,6 +380,9 @@ class MemoryDatabase {
     post.metaMediaId = undefined;
     if (newMediaUrl && newMediaUrl.trim()) {
       post.mediaUrl = newMediaUrl.trim();
+    }
+    if (newScheduledFor) {
+      post.scheduledFor = newScheduledFor;
     }
     return post;
   }

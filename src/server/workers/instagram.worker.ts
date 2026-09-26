@@ -36,6 +36,10 @@ const PLACEHOLDER_ACCOUNT_ID = '17841400000000000';
 // Cache em memória para o Instagram User ID obtido via /me
 let cachedInstagramUserId: { id: string; token: string; timestamp: number } | null = null;
 
+// Mapa para controle de taxa por conta do Instagram (anti-burst safety lock)
+// Armazena o timestamp (ms) da última publicação com sucesso ou início de publicação por instagramUserId
+const lastPublishTimestampByAccount = new Map<string, number>();
+
 /**
  * Obtém o ID do usuário do Instagram fazendo GET /me na Instagram Graph API
  */
@@ -188,6 +192,65 @@ export function initInstagramWorker() {
       await db.updatePost(postId, { status: 'FAILED', errorMessage: errorMsg });
       throw new Error(errorMsg);
     }
+
+    // TRAVA DE SEGURANÇA GERAL (ANTI-BURST RATE LIMIT):
+    // Nunca publicar mais de 1 post por conta a cada X minutos (padrão: 30 minutos)
+    const rateLimitMinutes = config.INSTAGRAM_PUBLISH_RATE_LIMIT_MINUTES || 30;
+    const minIntervalMs = rateLimitMinutes * 60 * 1000;
+    const now = Date.now();
+
+    // 1. Checa cache em memória de publicações recentes
+    const lastMemoryPublish = lastPublishTimestampByAccount.get(instagramUserId) || 0;
+    let mostRecentPublishTime = lastMemoryPublish;
+
+    // 2. Checa também posts já publicados no banco para esta conta
+    const allPosts = await db.getPosts();
+    for (const p of allPosts) {
+      if (p.id !== postId && p.status === 'PUBLISHED' && p.publishedAt) {
+        const pubTime = new Date(p.publishedAt).getTime();
+        if (pubTime > mostRecentPublishTime) {
+          mostRecentPublishTime = pubTime;
+        }
+      }
+    }
+
+    const elapsedMs = now - mostRecentPublishTime;
+    if (mostRecentPublishTime > 0 && elapsedMs < minIntervalMs) {
+      const remainingMs = minIntervalMs - elapsedMs;
+      const remainingMinutes = Math.ceil(remainingMs / 60000);
+      console.warn(
+        `[Instagram Worker] 🛑 Trava de taxa ativada para conta ${instagramUserId}: último post publicado há ${Math.round(
+          elapsedMs / 60000
+        )} min. Intervalo mínimo exigido: ${rateLimitMinutes} min. Reagendando job com delay de ${remainingMinutes} min.`
+      );
+
+      // Reenfileira o job com o delay restante para respeitar o intervalo mínimo de segurança
+      const newScheduledDate = new Date(now + remainingMs);
+      await db.updatePost(postId, {
+        status: 'SCHEDULED',
+        scheduledFor: newScheduledDate,
+      });
+
+      await instagramPublishQueue.add(
+        `ratelimit-delay-${postId}-${now}`,
+        {
+          postId,
+          mediaType,
+          mediaUrl,
+          caption,
+        },
+        { delay: remainingMs }
+      );
+
+      return {
+        status: 'POSTPONED_RATE_LIMIT',
+        message: `Job adiado por ${remainingMinutes} minutos para respeitar a trava de segurança de ${rateLimitMinutes} min entre posts.`,
+        rescheduledFor: newScheduledDate,
+      };
+    }
+
+    // Registra imediatamente o timestamp para reservar o slot de publicação
+    lastPublishTimestampByAccount.set(instagramUserId, now);
 
     console.log(
       `[Instagram Worker] Iniciando publicação real (${
