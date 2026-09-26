@@ -63,7 +63,8 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
 }) => {
   const [mediaType, setMediaType] = useState<'IMAGE' | 'REELS' | 'STORIES'>('REELS');
   const [caption, setCaption] = useState('Lançamento exclusivo da semana! Tênis e vestuário com frete grátis para todo o Brasil. Toque na sacolinha para comprar no Instagram Shop! 👟🔥 #streetwear #lifestyle');
-  const [mediaUrl, setMediaUrl] = useState('https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4');
+  // Usar vídeo local de teste 9:16 (compatível com especificações da Meta) em vez do link de preview externo
+  const [mediaUrl, setMediaUrl] = useState('https://meta.3facil.com/uploads/reels-test-9-16.mp4');
   
   // Período selecionado: 'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'
   const [schedulePeriod, setSchedulePeriod] = useState<'IMMEDIATE' | '5_DAYS' | '10_DAYS' | '15_DAYS' | 'CUSTOM'>('5_DAYS');
@@ -694,7 +695,7 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                       <div className="flex items-center space-x-1.5">
                         <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
                         <span className="font-semibold text-slate-900 text-xs truncate">
-                          {uploadedFileName || 'Arquivo Carregado'}
+                          {uploadedFileName || 'Vídeo de Teste Pronto (9:16)'}
                         </span>
                       </div>
                       <span className="text-[10px] text-emerald-700 font-mono block truncate">
@@ -710,6 +711,16 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                   >
                     <X className="h-4 w-4" />
                   </button>
+                </div>
+              )}
+
+              {/* Aviso explicativo das especificações de Reels */}
+              {mediaType === 'REELS' && (
+                <div className="mt-2 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200 flex items-start space-x-2 text-[11px] text-amber-900">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">Aviso importante para campanhas de Reels:</span> A Meta rejeita vídeos que não cumpram as diretrizes técnicas (formato vertical <strong>9:16</strong>, codec <strong>H.264/AAC</strong> e duração de 3s a 15min). Faça upload de um vídeo próprio gravado no celular ou utilize o arquivo de teste já gerado.
+                  </div>
                 </div>
               )}
             </div>
@@ -1245,19 +1256,29 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                                   )}
                                 </td>
                                 <td className="py-2.5 px-4">
-                                  <span
-                                    className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold ${
-                                      post.status === 'PUBLISHED'
-                                        ? 'bg-emerald-50 text-emerald-700'
-                                        : post.status === 'SCHEDULED'
-                                        ? 'bg-blue-50 text-blue-700'
-                                        : post.status === 'CANCELLED'
-                                        ? 'bg-slate-100 text-slate-500 line-through'
-                                        : 'bg-red-50 text-red-700'
-                                    }`}
-                                  >
-                                    {post.status}
-                                  </span>
+                                  <div className="flex flex-col space-y-0.5">
+                                    <span
+                                      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold w-max ${
+                                        post.status === 'PUBLISHED'
+                                          ? 'bg-emerald-50 text-emerald-700'
+                                          : post.status === 'SCHEDULED'
+                                          ? 'bg-blue-50 text-blue-700'
+                                          : post.status === 'CANCELLED'
+                                          ? 'bg-slate-100 text-slate-500 line-through'
+                                          : 'bg-red-50 text-red-700'
+                                      }`}
+                                    >
+                                      {post.status}
+                                    </span>
+                                    {post.status === 'FAILED' && post.errorMessage && (
+                                      <span 
+                                        className="text-[9px] text-red-600 max-w-[200px] truncate block font-mono"
+                                        title={post.errorMessage}
+                                      >
+                                        {post.errorMessage}
+                                      </span>
+                                    )}
+                                  </div>
                                 </td>
                               </tr>
                             ))}
@@ -1326,21 +1347,31 @@ export const InstagramPublisher: React.FC<InstagramPublisherProps> = ({
                     )}
                   </td>
                   <td className="py-3.5 px-4">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold ${
-                        post.status === 'PUBLISHED'
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : post.status === 'SCHEDULED'
-                          ? 'bg-blue-50 text-blue-700'
-                          : post.status === 'CANCELLED'
-                          ? 'bg-slate-100 text-slate-500 line-through'
-                          : post.status === 'FAILED'
-                          ? 'bg-red-50 text-red-700'
-                          : 'bg-amber-50 text-amber-700 animate-pulse'
-                      }`}
-                    >
-                      {post.status}
-                    </span>
+                    <div className="flex flex-col space-y-1">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold w-max ${
+                          post.status === 'PUBLISHED'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : post.status === 'SCHEDULED'
+                            ? 'bg-blue-50 text-blue-700'
+                            : post.status === 'CANCELLED'
+                            ? 'bg-slate-100 text-slate-500 line-through'
+                            : post.status === 'FAILED'
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-amber-50 text-amber-700 animate-pulse'
+                        }`}
+                      >
+                        {post.status}
+                      </span>
+                      {post.status === 'FAILED' && post.errorMessage && (
+                        <span 
+                          className="text-[10px] text-red-600 max-w-[240px] truncate block font-mono" 
+                          title={post.errorMessage}
+                        >
+                          {post.errorMessage}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-3.5 px-4 font-mono text-[11px] text-slate-500">
                     {post.campaignId ? (

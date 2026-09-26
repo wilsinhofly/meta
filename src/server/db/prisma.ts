@@ -190,7 +190,7 @@ const initialInstagramPosts: InstagramPostData[] = [
     igUserId: '17841443995002822',
     mediaType: 'REELS',
     caption: 'Lançamento imperdível: Nova coleção de tênis running com tecnologia responsiva. Acesse o link da bio ou chame no WhatsApp!',
-    mediaUrl: 'https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4',
+    mediaUrl: 'https://meta.3facil.com/uploads/reels-test-9-16.mp4',
     status: 'PUBLISHED',
     containerId: '17923485720194827',
     metaMediaId: '18029384756192834',

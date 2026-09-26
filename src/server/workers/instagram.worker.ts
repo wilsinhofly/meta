@@ -239,7 +239,7 @@ export function initInstagramWorker() {
     console.log(`[Instagram Worker] Container criado com sucesso: ${containerId}`);
     await db.updatePost(postId, { containerId });
 
-    // 3. FASE 2: Polling de Status do Container (GET /{container_id}?fields=status_code) até FINISHED
+    // 3. FASE 2: Polling de Status do Container (GET /{container_id}?fields=status_code,status) até FINISHED
     let isReady = false;
     let attempts = 0;
     const maxAttempts = 30; // Aguarda até 60 segundos
@@ -260,24 +260,36 @@ export function initInstagramWorker() {
       const statusData = await statusResponse.json().catch(() => ({}));
 
       if (!statusResponse.ok) {
-        const errorMsg = `Falha ao consultar status do container ${containerId}: HTTP ${statusResponse.status}`;
+        const rawStatusError = statusData.error ? `${statusData.error.message} (code: ${statusData.error.code})` : JSON.stringify(statusData);
+        const errorMsg = `Falha ao consultar status do container ${containerId}: HTTP ${statusResponse.status} - ${rawStatusError}`;
         console.error(`[Instagram Worker] ${errorMsg}`);
         await db.updatePost(postId, { status: 'FAILED', errorMessage: errorMsg });
         throw new Error(errorMsg);
       }
 
       const statusCode = statusData.status_code;
+      const statusText = statusData.status;
+
+      console.log(`[Instagram Worker] Status do container ${containerId}: status_code="${statusCode}", status="${statusText || ''}"`);
 
       if (statusCode === 'FINISHED') {
         isReady = true;
         console.log(`[Instagram Worker] Container ${containerId} pronto para publicação (FINISHED).`);
         break;
       } else if (statusCode === 'ERROR' || statusCode === 'EXPIRED') {
-        const errorMsg = `Meta rejeitou o container ${containerId}. Status: ${statusCode}. Detalhes: ${
-          statusData.status || 'Erro no processamento da mídia'
-        }`;
-        console.error(`[Instagram Worker] ${errorMsg}`);
-        await db.updatePost(postId, { status: 'FAILED', errorMessage: errorMsg });
+        // Captura detalhada: status_code + texto de status completo retornado pela Meta
+        const detailedStatusReason = typeof statusText === 'string' && statusText.trim().length > 0
+          ? statusText
+          : JSON.stringify(statusData);
+
+        const errorMsg = `Meta rejeitou o container ${containerId} (status_code: ${statusCode}): ${detailedStatusReason}`;
+        console.error(`[Instagram Worker] [ERRO REJEIÇÃO META]: ${errorMsg}`);
+
+        await db.updatePost(postId, {
+          status: 'FAILED',
+          errorCode: statusCode,
+          errorMessage: errorMsg,
+        });
         throw new Error(errorMsg);
       }
 

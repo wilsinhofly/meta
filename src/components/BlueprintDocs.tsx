@@ -119,7 +119,7 @@ PUBLIC_CDN_BASE_URL="${typeof window !== 'undefined' ? window.location.origin : 
   -d '{
     "mediaType": "REELS",
     "caption": "Novo drop esportivo! #reels #esporte",
-    "mediaUrl": "https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4"
+    "mediaUrl": "https://meta.3facil.com/uploads/reels-test-9-16.mp4"
   }'`,
     },
   ];

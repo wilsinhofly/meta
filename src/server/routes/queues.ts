@@ -114,7 +114,7 @@ export async function queueRoutes(fastify: FastifyInstance) {
         igUserId: '17841400000000000',
         mediaType: 'REELS',
         caption: body.payload?.caption || 'Reels demonstrativo com novo drop esportivo! 👟🔥 #running #esporte',
-        mediaUrl: body.payload?.mediaUrl || 'https://assets.mixkit.co/videos/preview/mixkit-athlete-putting-on-his-running-shoes-42359-large.mp4',
+        mediaUrl: body.payload?.mediaUrl || 'https://meta.3facil.com/uploads/reels-test-9-16.mp4',
         status: 'PROCESSING_CONTAINER',
       });
 
