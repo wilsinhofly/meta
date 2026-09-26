@@ -203,6 +203,26 @@ export default function App() {
     }
   };
 
+  const handleRetryCampaignFailed = async (campaignId: string, newMediaUrl?: string) => {
+    try {
+      const res = await fetch(`/api/instagram/campaigns/${campaignId}/retry-failed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newMediaUrl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao reprocessar falhas da campanha');
+      }
+      showToast(data.message || 'Publicações com falha foram reenfileiradas com sucesso!');
+      await loadData();
+      return data;
+    } catch (err: any) {
+      showToast(`⚠️ ${err.message || 'Falha ao reenfileirar campanha'}`);
+      throw err;
+    }
+  };
+
   const handleSendWhatsAppMessage = async (to: string, message: string) => {
     try {
       await fetch('/api/queues/simulate', {
@@ -291,6 +311,7 @@ export default function App() {
             onSchedulePost={handleSchedulePost}
             onScheduleCampaign={handleScheduleCampaign}
             onCancelCampaign={handleCancelCampaign}
+            onRetryCampaignFailed={handleRetryCampaignFailed}
             isPublishing={isSimulating}
           />
         )}

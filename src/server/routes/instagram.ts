@@ -456,4 +456,88 @@ export async function instagramRoutes(fastify: FastifyInstance) {
       });
     }
   );
+
+  /**
+   * REPROCESSAR EM LOTE POSTS COM FALHA DE UMA CAMPANHA:
+   * POST /api/instagram/campaigns/:campaignId/retry-failed
+   * - Busca todos os posts com aquele campaignId (ou correspondência de ID) com status FAILED
+   * - Opcionalmente recebe newMediaUrl para substituir a URL problemática
+   * - Reseta o status de FAILED para SCHEDULED, limpa errorCode/errorMessage/containerId
+   * - Reenfileira cada job na fila BullMQ instagram-publisher
+   * - Retorna a contagem de posts reenfileirados e os dados atualizados
+   */
+  fastify.post(
+    '/api/instagram/campaigns/:campaignId/retry-failed',
+    async (
+      request: FastifyRequest<{
+        Params: { campaignId: string };
+        Body?: { newMediaUrl?: string };
+      }>,
+      reply: FastifyReply
+    ) => {
+      const { campaignId } = request.params;
+      const { newMediaUrl } = request.body || {};
+
+      if (!campaignId) {
+        return reply.code(400).send({ error: 'campaignId é obrigatório.' });
+      }
+
+      // 1. Obter todos os posts com falha desta campanha
+      const failedPosts = await db.getFailedPostsByCampaign(campaignId);
+
+      if (failedPosts.length === 0) {
+        return reply.code(200).send({
+          success: true,
+          campaignId,
+          retriedCount: 0,
+          message: 'Nenhum post com status FAILED encontrado para esta campanha.',
+          posts: [],
+        });
+      }
+
+      const retriedPosts: any[] = [];
+      const now = Date.now();
+
+      // 2. Para cada post falho, resetar dados e reenfileirar na BullMQ
+      for (const failedPost of failedPosts) {
+        const updatedPost = await db.resetPostForRetry(failedPost.id, newMediaUrl);
+        if (!updatedPost) continue;
+
+        // Se scheduledFor estiver no passado ou agora, processa imediatamente (delay 0);
+        // senão calcula o delay restante até o horário previsto
+        let delay = 0;
+        if (updatedPost.scheduledFor) {
+          const scheduledTime = new Date(updatedPost.scheduledFor).getTime();
+          delay = Math.max(0, scheduledTime - now);
+        }
+
+        // Reenfileirar o job na fila instagram-publisher com o novo/mesmo mediaUrl
+        const job = await instagramPublishQueue.add(
+          `retry-${updatedPost.id}-${Date.now()}`,
+          {
+            postId: updatedPost.id,
+            mediaType: updatedPost.mediaType,
+            mediaUrl: updatedPost.mediaUrl,
+            caption: updatedPost.caption,
+          },
+          { delay }
+        );
+
+        retriedPosts.push({
+          post: updatedPost,
+          jobId: job.id,
+          delayMs: delay,
+        });
+      }
+
+      return reply.code(200).send({
+        success: true,
+        campaignId,
+        retriedCount: retriedPosts.length,
+        newMediaUrl: newMediaUrl || null,
+        message: `${retriedPosts.length} posts com falha foram resetados e reenfileirados com sucesso na fila instagram-publisher.`,
+        retriedPosts,
+      });
+    }
+  );
 }

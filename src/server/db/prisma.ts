@@ -360,7 +360,28 @@ class MemoryDatabase {
   }
 
   async getPostsByCampaign(campaignId: string) {
-    return this.posts.filter((p) => p.campaignId === campaignId);
+    return this.posts.filter((p) => p.campaignId === campaignId || p.id.includes(campaignId));
+  }
+
+  async getFailedPostsByCampaign(campaignId: string) {
+    return this.posts.filter(
+      (p) => (p.campaignId === campaignId || p.id.includes(campaignId)) && p.status === 'FAILED'
+    );
+  }
+
+  async resetPostForRetry(id: string, newMediaUrl?: string) {
+    const post = this.posts.find((p) => p.id === id);
+    if (!post) return null;
+
+    post.status = 'SCHEDULED';
+    post.errorCode = undefined;
+    post.errorMessage = undefined;
+    post.containerId = undefined;
+    post.metaMediaId = undefined;
+    if (newMediaUrl && newMediaUrl.trim()) {
+      post.mediaUrl = newMediaUrl.trim();
+    }
+    return post;
   }
 
   // Meta Credentials Storage
